@@ -10,9 +10,18 @@ struct HistoryContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             HSplitView {
-                leftPane
+                LiquidGlassCard(cornerRadius: 18) {
+                    leftPane
+                }
+                .padding(.leading, 8)
+                .padding(.vertical, 8)
                     .frame(minWidth: 280, maxWidth: 360, maxHeight: .infinity)
-                rightPane
+
+                LiquidGlassCard(cornerRadius: 18) {
+                    rightPane
+                }
+                .padding(.trailing, 8)
+                .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
@@ -109,7 +118,7 @@ struct HistoryContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(12)
+        .padding(2)
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -199,7 +208,7 @@ struct HistoryContentView: View {
                     }
                 }
             }
-            .padding(12)
+            .padding(2)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxHeight: .infinity, alignment: .topLeading)

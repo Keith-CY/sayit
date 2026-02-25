@@ -22,34 +22,44 @@ struct SettingsContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                sidebar
-                Divider()
+            HStack(spacing: 10) {
+                LiquidGlassCard(cornerRadius: 16) {
+                    sidebar
+                }
+                .frame(minWidth: 180, maxWidth: 220, maxHeight: .infinity, alignment: .topLeading)
 
-                ScrollView {
-                    ZStack(alignment: .topLeading) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            contentTitle
-                            panelContent
+                LiquidGlassCard(cornerRadius: 16) {
+                    ScrollView {
+                        ZStack(alignment: .topLeading) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                contentTitle
+                                panelContent
+                            }
+                            .id(selectedPanel)
+                            .transition(.opacity.combined(with: .move(edge: .trailing)))
                         }
-                        .id(selectedPanel)
-                        .transition(.opacity.combined(with: .move(edge: .trailing)))
+                        .padding(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+            .padding(8)
 
             Divider()
             HStack(spacing: 8) {
                 Button(language.text("settings.save")) {
                     viewModel.save()
                 }
+                .buttonStyle(GlassPillButtonStyle(isSelected: true))
+                .controlSize(.regular)
                 Button(language.text("history.refresh")) {
                     viewModel.load()
                     modelsViewModel.refresh()
                 }
+                .buttonStyle(GlassPillButtonStyle())
+                .controlSize(.regular)
                 Spacer()
                 if !viewModel.status.isEmpty {
                     Text(viewModel.status)
@@ -91,7 +101,7 @@ struct SettingsContentView: View {
             Spacer()
         }
         .padding(12)
-        .frame(minWidth: 180, maxWidth: 220, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var contentTitle: some View {

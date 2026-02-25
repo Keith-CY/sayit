@@ -8,133 +8,177 @@ struct LiveContentView: View {
 
     var body: some View {
         ZStack {
-            VStack(spacing: 0) {
-                header
-                Divider()
+            GeometryReader { geometry in
+                let isWideLayout = geometry.size.width > 1060
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        transcriptPanel
-                        actionPanel
+                    if isWideLayout {
+                        HStack(alignment: .top, spacing: 14) {
+                            transcriptCard
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                            VStack(alignment: .leading, spacing: 14) {
+                                headerCard
+                                actionCard
+                            }
+                            .frame(width: min(360, geometry.size.width * 0.32), alignment: .topLeading)
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 14) {
+                            headerCard
+                            transcriptCard
+                            actionCard
+                        }
                     }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if viewModel.shouldShowCodexOAuthOverlay {
                 Color.black.opacity(0.25)
                     .ignoresSafeArea()
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text(language.text("settings.codexOAuth"))
-                            .font(.headline)
-                        Spacer()
-                        Button(language.text("live.oauthClose")) {
-                            viewModel.dismissCodexOAuthOverlay()
-                        }
-                        .disabled(viewModel.codexOAuthInProgress)
-                    }
-
-                    Text("\(language.text("settings.codexOAuthStatus")): \(viewModel.codexOAuthStatusLine)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if !viewModel.codexDeviceAuthCode.isEmpty {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(language.text("settings.codexOAuthCode")):")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(viewModel.codexDeviceAuthCode)
-                                .font(.body.monospaced())
-                                .textSelection(.enabled)
+                LiquidGlassCard(cornerRadius: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(language.text("settings.codexOAuth"))
+                                .font(.headline.weight(.semibold))
                             Spacer()
-                            Button(language.text("settings.codexOAuthCopyCode")) {
-                                viewModel.copyCodexDeviceCode()
+                            Button(language.text("live.oauthClose")) {
+                                viewModel.dismissCodexOAuthOverlay()
+                            }
+                            .disabled(viewModel.codexOAuthInProgress)
+                            .buttonStyle(GlassPillButtonStyle())
+                        }
+
+                        Text("\(language.text("settings.codexOAuthStatus")): \(viewModel.codexOAuthStatusLine)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        if !viewModel.codexDeviceAuthCode.isEmpty {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("\(language.text("settings.codexOAuthCode")):")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(viewModel.codexDeviceAuthCode)
+                                    .font(.body.monospaced())
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Button(language.text("settings.codexOAuthCopyCode")) {
+                                    viewModel.copyCodexDeviceCode()
+                                }
+                                .buttonStyle(GlassPillButtonStyle())
                             }
                         }
-                    }
 
-                    if !viewModel.codexDeviceAuthURL.isEmpty {
-                        if let authURL = URL(string: viewModel.codexDeviceAuthURL) {
-                            Link(viewModel.codexDeviceAuthURL, destination: authURL)
-                                .font(.caption2)
-                        } else {
-                            Text(viewModel.codexDeviceAuthURL)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                    }
-
-                    HStack(spacing: 8) {
-                        Button(language.text("settings.codexOAuthStart")) {
-                            viewModel.startCodexOAuthLogin()
-                        }
-                        .disabled(viewModel.codexOAuthInProgress)
-
-                        Button(language.text("live.oauthOpenBrowser")) {
-                            viewModel.openCodexAuthURLInBrowser()
-                        }
-                        .disabled(viewModel.codexDeviceAuthURL.isEmpty)
-
-                        Button(language.text("settings.codexOAuthCopyURL")) {
-                            viewModel.copyCodexAuthURL()
-                        }
-                        .disabled(viewModel.codexDeviceAuthURL.isEmpty)
-
-                        Button(language.text("settings.codexOAuthRefresh")) {
-                            Task { await viewModel.refreshCodexOAuthStatus() }
+                        if !viewModel.codexDeviceAuthURL.isEmpty {
+                            if let authURL = URL(string: viewModel.codexDeviceAuthURL) {
+                                Link(viewModel.codexDeviceAuthURL, destination: authURL)
+                                    .font(.caption2)
+                            } else {
+                                Text(viewModel.codexDeviceAuthURL)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
                         }
 
-                        Button(language.text("settings.codexOAuthCancel")) {
-                            viewModel.cancelCodexOAuthLogin()
-                        }
-                        .disabled(!viewModel.codexOAuthInProgress)
-                    }
+                        HStack(spacing: 8) {
+                            Button(language.text("settings.codexOAuthStart")) {
+                                viewModel.startCodexOAuthLogin()
+                            }
+                            .disabled(viewModel.codexOAuthInProgress)
+                            .buttonStyle(GlassPillButtonStyle())
 
-                    if !viewModel.codexOAuthLogs.isEmpty {
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 2) {
-                                ForEach(Array(viewModel.codexOAuthLogs.enumerated()), id: \.offset) { _, line in
-                                    Text(line)
-                                        .font(.caption2.monospaced())
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                            Button(language.text("live.oauthOpenBrowser")) {
+                                viewModel.openCodexAuthURLInBrowser()
+                            }
+                            .disabled(viewModel.codexDeviceAuthURL.isEmpty)
+                            .buttonStyle(GlassPillButtonStyle())
+
+                            Button(language.text("settings.codexOAuthCopyURL")) {
+                                viewModel.copyCodexAuthURL()
+                            }
+                            .disabled(viewModel.codexDeviceAuthURL.isEmpty)
+                            .buttonStyle(GlassPillButtonStyle())
+
+                            Button(language.text("settings.codexOAuthRefresh")) {
+                                Task { await viewModel.refreshCodexOAuthStatus() }
+                            }
+                            .buttonStyle(GlassPillButtonStyle())
+
+                            Button(language.text("settings.codexOAuthCancel")) {
+                                viewModel.cancelCodexOAuthLogin()
+                            }
+                            .disabled(!viewModel.codexOAuthInProgress)
+                            .buttonStyle(GlassPillButtonStyle())
+                        }
+
+                        if !viewModel.codexOAuthLogs.isEmpty {
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 2) {
+                                    ForEach(Array(viewModel.codexOAuthLogs.enumerated()), id: \.offset) { _, line in
+                                        Text(line)
+                                            .font(.caption2.monospaced())
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                 }
                             }
+                            .frame(minHeight: 80, maxHeight: 160)
                         }
-                        .frame(minHeight: 80, maxHeight: 160)
                     }
                 }
-                .padding(14)
                 .frame(maxWidth: 620)
-                .background(Color(NSColor.windowBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .shadow(radius: 18)
+                .padding(8)
             }
         }
     }
 
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(language.text("tab.live"))
-                    .font(.title3.weight(.semibold))
-                Text("\(language.text("status")): \(viewModel.status)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    private var headerCard: some View {
+        LiquidGlassCard(cornerRadius: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(language.text("tab.live"))
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(LiquidGlassTheme.ink)
+
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(viewModel.isRecording ? LiquidGlassTheme.hotPink : Color.secondary.opacity(0.4))
+                            .frame(width: 8, height: 8)
+                            .shadow(color: LiquidGlassTheme.roseQuartz.opacity(viewModel.isRecording ? 0.72 : 0), radius: 6)
+                        Text("\(language.text("status")): \(viewModel.status)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    VoicePulseView(
+                        isActive: viewModel.isRecording,
+                        level: viewModel.liveAudioLevel,
+                        bands: viewModel.liveAudioBands
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if viewModel.isRecording {
+                        Text(String(format: language.text("live.micLevel"), viewModel.liveAudioLevel * 100))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            Spacer()
-            VoicePulseView(isActive: viewModel.isRecording)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 
-    private var transcriptPanel: some View {
-        GroupBox(language.text("final")) {
+    private var transcriptCard: some View {
+        LiquidGlassCard(cornerRadius: 18) {
             VStack(alignment: .leading, spacing: 8) {
+                Text(language.text("final"))
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(LiquidGlassTheme.ink)
+
                 if !viewModel.partialText.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(language.text("partial"))
@@ -144,23 +188,33 @@ struct LiveContentView: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
-                            .background(Color.orange.opacity(0.08))
+                            .background(LiquidGlassTheme.hotPink.opacity(0.10))
                             .cornerRadius(8)
                     }
                 }
 
                 TextEditor(text: $viewModel.currentText)
                     .font(.system(size: 14, weight: .regular, design: .rounded))
-                    .frame(minHeight: 260)
-                    .border(Color.secondary.opacity(0.25), width: 1)
+                    .frame(minHeight: 360)
+                    .padding(8)
+                    .background(Color.white.opacity(0.56))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(LiquidGlassTheme.hairline.opacity(0.92), lineWidth: 1)
+                    )
             }
         }
     }
 
-    private var actionPanel: some View {
-        GroupBox(language.text("settings.sectionGeneral")) {
+    private var actionCard: some View {
+        LiquidGlassCard(cornerRadius: 18) {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
+                Text(language.text("settings.sectionGeneral"))
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(LiquidGlassTheme.ink)
+
+                HStack(spacing: 8) {
                     Button(viewModel.isRecording ? language.text("stop") : language.text("start")) {
                         if viewModel.isRecording {
                             viewModel.stopRecording()
@@ -168,11 +222,12 @@ struct LiveContentView: View {
                             viewModel.startRecording()
                         }
                     }
-                    .keyboardShortcut(.space, modifiers: [.command, .shift])
+                    .buttonStyle(GlassPillButtonStyle(isSelected: viewModel.isRecording))
 
                     Button(language.text("clear")) {
                         viewModel.clearText()
                     }
+                    .buttonStyle(GlassPillButtonStyle())
 
                     Button(language.text("transcribeFile")) {
                         if let url = askAudioFileURL() {
@@ -180,22 +235,28 @@ struct LiveContentView: View {
                         }
                     }
                     .disabled(viewModel.isRecording)
+                    .buttonStyle(GlassPillButtonStyle())
                 }
+                .controlSize(.regular)
 
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Button(language.text("refine")) {
                         viewModel.refineCurrentText()
                     }
+                    .buttonStyle(GlassPillButtonStyle())
 
                     Button(language.text("speak")) {
                         viewModel.speakCurrentText()
                     }
+                    .buttonStyle(GlassPillButtonStyle())
 
                     Button(language.text("live.codexOAuthLogin")) {
                         viewModel.startCodexOAuthLogin()
                     }
                     .disabled(viewModel.codexOAuthInProgress)
+                    .buttonStyle(GlassPillButtonStyle())
                 }
+                .controlSize(.regular)
             }
         }
     }

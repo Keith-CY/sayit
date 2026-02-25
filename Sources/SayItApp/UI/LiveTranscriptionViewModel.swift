@@ -6,6 +6,8 @@ import SayItCore
 final class LiveTranscriptionViewModel: ObservableObject {
     @Published var currentText: String = ""
     @Published var partialText: String = ""
+    @Published var liveAudioLevel: CGFloat = 0
+    @Published var liveAudioBands: [CGFloat] = Array(repeating: 0, count: 18)
     @Published var isRecording: Bool = false
     @Published var status: String = "Idle"
     @Published var activeSessionID: UUID?
@@ -18,8 +20,11 @@ final class LiveTranscriptionViewModel: ObservableObject {
 
     private let runtime: SayItCoreRuntime?
     private let onHistoryChanged: (() -> Void)?
+    private let levelMonitor = MicrophoneLevelMonitor()
     private var streamTask: Task<Void, Never>?
     private var codexDeviceAuthTask: Task<Void, Never>?
+    private var smoothedAudioLevel: CGFloat = 0
+    private var smoothedAudioBands: [CGFloat] = Array(repeating: 0, count: 18)
     private lazy var playbackQueue = SpeechPlaybackQueue { [weak self] count in
         guard let self else { return }
         if count == 0, status.hasPrefix("Speaking") {
@@ -240,6 +245,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
             streamingPipelineExecutor = pipelineExecutor
             activeSessionID = session.id
             isRecording = true
+            await startLiveMetering()
             status = "Listening"
             partialText = ""
 
@@ -260,6 +266,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
                 }
                 activeSessionID = nil
                 isRecording = false
+                stopLiveMetering()
                 onHistoryChanged?()
             }
 
@@ -429,6 +436,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
 
             activeSessionID = session.id
             isRecording = true
+            await startLiveMetering()
             status = "Fallback recording (\(provider.id))"
             partialText = ""
 
@@ -437,6 +445,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
                 try? runtime.historyRepository.finishSession(id: session.id)
                 activeSessionID = nil
                 isRecording = false
+                stopLiveMetering()
                 onHistoryChanged?()
             }
 
@@ -669,6 +678,45 @@ final class LiveTranscriptionViewModel: ObservableObject {
         } else {
             currentText += "\n" + text
         }
+    }
+
+    private func startLiveMetering() async {
+        smoothedAudioLevel = 0
+        smoothedAudioBands = Array(repeating: 0, count: 18)
+        liveAudioLevel = 0
+        liveAudioBands = Array(repeating: 0, count: 18)
+        do {
+            try await levelMonitor.start { [weak self] signal in
+                guard let self else { return }
+                let raw = CGFloat(signal.level)
+                let smoothed = (self.smoothedAudioLevel * 0.76) + (raw * 0.24)
+                self.smoothedAudioLevel = smoothed
+                self.liveAudioLevel = min(max(smoothed, 0), 1)
+
+                if self.smoothedAudioBands.count != signal.bands.count {
+                    self.smoothedAudioBands = Array(repeating: 0, count: signal.bands.count)
+                }
+                for index in 0..<self.smoothedAudioBands.count {
+                    let rawBand = CGFloat(signal.bands[index])
+                    let previous = self.smoothedAudioBands[index]
+                    let smoothing: CGFloat = rawBand > previous ? 0.45 : 0.22
+                    self.smoothedAudioBands[index] = previous * (1 - smoothing) + rawBand * smoothing
+                }
+                self.liveAudioBands = self.smoothedAudioBands
+            }
+        } catch {
+            // Metering is best effort and should never break transcription.
+            liveAudioLevel = 0
+            liveAudioBands = Array(repeating: 0, count: 18)
+        }
+    }
+
+    private func stopLiveMetering() {
+        levelMonitor.stop()
+        smoothedAudioLevel = 0
+        smoothedAudioBands = Array(repeating: 0, count: 18)
+        liveAudioLevel = 0
+        liveAudioBands = Array(repeating: 0, count: 18)
     }
 
     private func resolveDefaultPipeline(runtime: SayItCoreRuntime, config: AppConfig) -> TextPipeline? {
