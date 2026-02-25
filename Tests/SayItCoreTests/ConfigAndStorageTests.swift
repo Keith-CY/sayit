@@ -13,6 +13,7 @@ final class ConfigAndStorageTests: XCTestCase {
 
         XCTAssertEqual(config.stt.primary, "openai")
         XCTAssertEqual(config.stt.localDefault, "whisper")
+        XCTAssertEqual(config.hotkey.keyCode, 49)
         XCTAssertEqual(config.hotkey.modifiers, 768)
         XCTAssertTrue(FileManager.default.fileExists(atPath: configURL.path))
 
@@ -20,6 +21,9 @@ final class ConfigAndStorageTests: XCTestCase {
         XCTAssertTrue(raw.contains("\"local_default\""))
         XCTAssertTrue(raw.contains("\"pipeline\""))
         XCTAssertTrue(raw.contains("\"default_id\""))
+        XCTAssertTrue(raw.contains("\"hotkey\""))
+        XCTAssertTrue(raw.contains("\"key_code\""))
+        XCTAssertTrue(raw.contains("\"modifiers\""))
     }
 
     func testSQLiteSchemaTablesExist() throws {
@@ -238,6 +242,24 @@ final class ConfigAndStorageTests: XCTestCase {
         XCTAssertEqual(config.stt.primary, "whisper")
         XCTAssertEqual(config.stt.localDefault, "moonshine")
         XCTAssertEqual(config.hotkey.modifiers, 768)
+    }
+
+    func testConfigSavePersistsHotkey() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.json")
+        let manager = AppConfigManager(configURL: configURL)
+
+        var config = try manager.load()
+        config.hotkey.keyCode = 0
+        config.hotkey.modifiers = 1048576
+        try manager.save(config)
+
+        let loaded = try manager.load()
+        XCTAssertEqual(loaded.hotkey.keyCode, 0)
+        XCTAssertEqual(loaded.hotkey.modifiers, 1048576)
+
+        let raw = try String(contentsOf: configURL)
+        XCTAssertTrue(raw.contains("\"key_code\" : 0"))
     }
 
     private func fetchTableNames(from store: SQLiteStore) throws -> Set<String> {

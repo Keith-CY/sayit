@@ -108,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotkey() {
-        let manager = GlobalHotkeyManager()
+        let manager = hotkeyManager ?? GlobalHotkeyManager()
         manager.onHotkey = { [weak self] in
             self?.openLiveWindow()
             self?.liveViewModel?.toggleHotkeyCapture()
@@ -118,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try manager.register(keyCode: hotkey.keyCode, modifiers: hotkey.modifiers)
         } catch {
             NSLog("Failed to register global hotkey: \(error.localizedDescription)")
+            manager.unregister()
         }
         self.hotkeyManager = manager
     }

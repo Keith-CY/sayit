@@ -8,6 +8,8 @@ final class GlobalHotkeyManager {
     private var eventHandler: EventHandlerRef?
 
     func register(keyCode: UInt32, modifiers: UInt32) throws {
+        unregister()
+
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
 
         let status = InstallEventHandler(
@@ -53,12 +55,18 @@ final class GlobalHotkeyManager {
         }
     }
 
-    deinit {
+    func unregister() {
         if let hotKeyRef {
             UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
         }
         if let eventHandler {
             RemoveEventHandler(eventHandler)
+            self.eventHandler = nil
         }
+    }
+
+    deinit {
+        unregister()
     }
 }

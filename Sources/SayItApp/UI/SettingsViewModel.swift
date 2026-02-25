@@ -22,6 +22,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var selectedLocalFallback: String = "whisper"
     @Published var selectedRefinePrimary: String = "codex_oauth"
     @Published var selectedTTSPrimary: String = "openai_tts"
+    @Published var hotkeyKeyCode: UInt32 = AppConfig.HotkeyConfig().keyCode
+    @Published var hotkeyModifiers: UInt32 = AppConfig.HotkeyConfig().modifiers
     @Published var codexOAuthStatusLine: String = "Unknown"
     @Published var codexOAuthSourcePath: String = ""
     @Published var codexOAuthLastRefreshText: String = ""
@@ -43,6 +45,10 @@ final class SettingsViewModel: ObservableObject {
     private var codexDeviceAuthTask: Task<Void, Never>?
     private var hasLoadedSensitiveCredentials = false
     private var hasLoadedManualCodexCredentials = false
+
+    var hotkeyDisplayText: String {
+        HotkeyFormatter.displayString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers)
+    }
 
     var editingPipeline: TextPipeline? {
         guard let index = editingPipelineIndex() else { return nil }
@@ -75,6 +81,8 @@ final class SettingsViewModel: ObservableObject {
             selectedLocalFallback = config.fallbackPolicy.localFallback.isEmpty ? config.stt.localDefault : config.fallbackPolicy.localFallback
             selectedRefinePrimary = config.refine.primary
             selectedTTSPrimary = config.tts.primary
+            hotkeyKeyCode = config.hotkey.keyCode
+            hotkeyModifiers = HotkeyFormatter.normalizedModifiers(config.hotkey.modifiers)
             if includeSecrets {
                 try loadSensitiveCredentials(forceReload: forceSecretsReload)
                 Task { await refreshCodexOAuthStatus() }
@@ -250,6 +258,12 @@ final class SettingsViewModel: ObservableObject {
             config.fallbackPolicy.localFallback = selectedLocalFallback
             config.refine.primary = selectedRefinePrimary
             config.tts.primary = selectedTTSPrimary
+            config.hotkey.keyCode = hotkeyKeyCode
+            config.hotkey.modifiers = HotkeyFormatter.normalizedModifiers(hotkeyModifiers)
+            guard HotkeyFormatter.hasModifier(config.hotkey.modifiers) else {
+                status = "Hotkey requires at least one modifier"
+                return
+            }
             try runtime.configManager.save(config)
             if !openAIAPIKey.isEmpty {
                 try runtime.keychain.set(openAIAPIKey, for: "openai_api_key")
@@ -277,6 +291,24 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             status = "Save error: \(error.localizedDescription)"
         }
+    }
+
+    func updateHotkey(keyCode: UInt32, modifiers: UInt32) {
+        let normalized = HotkeyFormatter.normalizedModifiers(modifiers)
+        guard HotkeyFormatter.hasModifier(normalized) else {
+            status = "Hotkey requires at least one modifier"
+            return
+        }
+        hotkeyKeyCode = keyCode
+        hotkeyModifiers = normalized
+        status = "Hotkey updated: \(hotkeyDisplayText)"
+    }
+
+    func resetHotkeyToDefault() {
+        let defaultConfig = AppConfig.HotkeyConfig()
+        hotkeyKeyCode = defaultConfig.keyCode
+        hotkeyModifiers = HotkeyFormatter.normalizedModifiers(defaultConfig.modifiers)
+        status = "Hotkey reset: \(hotkeyDisplayText)"
     }
 
     func importFromCodexCLI() {

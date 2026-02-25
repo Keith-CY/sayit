@@ -1,3 +1,5 @@
+import AppKit
+import Carbon
 import SayItCore
 import SwiftUI
 
@@ -15,6 +17,7 @@ struct SettingsContentView: View {
     @ObservedObject var modelsViewModel: LocalModelsViewModel
     @EnvironmentObject private var language: AppLanguageCenter
     @State private var selectedPanel: SettingsPanel = .general
+    @StateObject private var hotkeyCapture = HotkeyCaptureController()
     @Namespace private var sidebarSelection
 
     var body: some View {
@@ -122,6 +125,47 @@ struct SettingsContentView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: viewModel.selectedLocale) { _, newValue in
                     language.setLocale(newValue)
+                }
+            }
+
+            GroupBox(language.text("settings.hotkey")) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Text(language.text("settings.hotkeyCurrent"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Text(viewModel.hotkeyDisplayText)
+                            .font(.body.monospaced())
+                            .textSelection(.enabled)
+
+                        Spacer()
+
+                        Button(
+                            hotkeyCapture.isCapturing
+                                ? language.text("settings.hotkeyCaptureStop")
+                                : language.text("settings.hotkeyCaptureStart")
+                        ) {
+                            if hotkeyCapture.isCapturing {
+                                hotkeyCapture.stop(cancelled: true, viewModel: viewModel, language: language)
+                            } else {
+                                hotkeyCapture.start(viewModel: viewModel, language: language)
+                            }
+                        }
+
+                        Button(language.text("settings.hotkeyReset")) {
+                            hotkeyCapture.stop(cancelled: false, viewModel: viewModel, language: language)
+                            viewModel.resetHotkeyToDefault()
+                        }
+                    }
+
+                    Text(
+                        hotkeyCapture.isCapturing
+                            ? language.text("settings.hotkeyRecordingHint")
+                            : language.text("settings.hotkeyHint")
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -454,5 +498,57 @@ struct SettingsContentView: View {
             return "WHISPER (default) • \(model.name)"
         }
         return "\(model.engine.rawValue.uppercased()) • \(model.name)"
+    }
+}
+
+@MainActor
+private final class HotkeyCaptureController: ObservableObject {
+    @Published var isCapturing = false
+
+    nonisolated(unsafe) private var monitor: Any?
+
+    func start(viewModel: SettingsViewModel, language: AppLanguageCenter) {
+        guard !isCapturing else { return }
+
+        stop(cancelled: false, viewModel: viewModel, language: language)
+        isCapturing = true
+
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+
+            let keyCode = UInt32(event.keyCode)
+            if keyCode == UInt32(kVK_Escape) {
+                self.stop(cancelled: true, viewModel: viewModel, language: language)
+                return nil
+            }
+
+            let modifiers = HotkeyFormatter.carbonModifiers(from: event.modifierFlags)
+            guard HotkeyFormatter.hasModifier(modifiers) else {
+                NSSound.beep()
+                viewModel.status = language.text("settings.hotkeyNeedModifier")
+                return nil
+            }
+
+            viewModel.updateHotkey(keyCode: keyCode, modifiers: modifiers)
+            self.stop(cancelled: false, viewModel: viewModel, language: language)
+            return nil
+        }
+    }
+
+    func stop(cancelled: Bool, viewModel: SettingsViewModel, language: AppLanguageCenter) {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+        if cancelled, isCapturing {
+            viewModel.status = language.text("settings.hotkeyCaptureCancelled")
+        }
+        isCapturing = false
+    }
+
+    deinit {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
     }
 }
