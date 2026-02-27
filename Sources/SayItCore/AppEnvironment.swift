@@ -14,6 +14,7 @@ public final class SayItCoreRuntime {
     public let fallbackStateMachine: FallbackStateMachine
     public let primarySTTProvider: STTProvider
     public let whisperProvider: STTProvider
+    public let fasterWhisperProvider: STTProvider
     public let parakeetProvider: STTProvider
     public let moonshineProvider: STTProvider
     public let orchestrator: TranscriptionOrchestrator
@@ -44,13 +45,11 @@ public final class SayItCoreRuntime {
         }
         let fallbackStateMachine = FallbackStateMachine(policy: config.fallbackPolicy)
 
-        let primarySTTProvider = OpenAISTTProvider {
-            try await openAIKeyResolver.apiKey()
-        }
-
-        let whisperProvider = WhisperSTTProvider()
-        let parakeetProvider = ParakeetSTTProvider()
-        let moonshineProvider = MoonshineSTTProvider()
+        let fasterWhisperProvider = FasterWhisperSTTProvider()
+        let primarySTTProvider: STTProvider = fasterWhisperProvider
+        let whisperProvider: STTProvider = fasterWhisperProvider
+        let parakeetProvider: STTProvider = fasterWhisperProvider
+        let moonshineProvider: STTProvider = fasterWhisperProvider
 
         let openAIRefineProvider = OpenAIRefineProvider {
             try await openAIKeyResolver.apiKey()
@@ -61,7 +60,7 @@ public final class SayItCoreRuntime {
 
         let orchestrator = TranscriptionOrchestrator(
             primary: primarySTTProvider,
-            localFallback: whisperProvider,
+            localFallback: fasterWhisperProvider,
             fallbackStateMachine: fallbackStateMachine,
             pipelineExecutor: pipelineExecutor,
             repository: historyRepository
@@ -84,6 +83,7 @@ public final class SayItCoreRuntime {
         self.fallbackStateMachine = fallbackStateMachine
         self.primarySTTProvider = primarySTTProvider
         self.whisperProvider = whisperProvider
+        self.fasterWhisperProvider = fasterWhisperProvider
         self.parakeetProvider = parakeetProvider
         self.moonshineProvider = moonshineProvider
         self.orchestrator = orchestrator
@@ -101,16 +101,8 @@ public final class SayItCoreRuntime {
     }
 
     public func sttProvider(for id: String) -> STTProvider {
-        switch id {
-        case whisperProvider.id:
-            return whisperProvider
-        case parakeetProvider.id:
-            return parakeetProvider
-        case moonshineProvider.id:
-            return moonshineProvider
-        default:
-            return primarySTTProvider
-        }
+        _ = id
+        return fasterWhisperProvider
     }
 
     public func refineProvider(for id: String) -> RefineProvider {
@@ -138,26 +130,104 @@ public final class SayItCoreRuntime {
 
 private actor OpenAIAPIKeyResolver {
     private let keychain: KeychainStore
-    private var cachedKey: String?
+    private var cachedCredential: String?
+    private var cachedSTTCredential: OpenAISTTProvider.Credential?
 
     init(keychain: KeychainStore) {
         self.keychain = keychain
     }
 
     func apiKey() throws -> String {
-        if let cachedKey, !cachedKey.isEmpty {
-            return cachedKey
+        if let cachedCredential, !cachedCredential.isEmpty {
+            return cachedCredential
         }
 
-        guard let key = try keychain.get("openai_api_key"), !key.isEmpty else {
-            throw SayItError.authentication("OpenAI API key is missing. Save it to keychain with key openai_api_key")
+        if let key = normalized(try keychain.get("openai_api_key")) {
+            cachedCredential = key
+            return key
         }
 
-        cachedKey = key
-        return key
+        if let snapshot = try? CodexAuthImporter.importFromDefaultLocations(),
+           let key = normalized(snapshot.openAIAPIKey)
+        {
+            cachedCredential = key
+            return key
+        }
+
+        throw SayItError.authentication(
+            "OpenAI API key is missing. Set openai_api_key or ensure ~/.codex/auth.json contains OPENAI_API_KEY."
+        )
+    }
+
+    func sttCredential() throws -> OpenAISTTProvider.Credential {
+        if let cachedSTTCredential, !cachedSTTCredential.token.isEmpty {
+            return cachedSTTCredential
+        }
+
+        if let key = normalized(try keychain.get("openai_api_key")) {
+            let credential = OpenAISTTProvider.Credential(token: key, mode: .apiKey)
+            cache(credential)
+            return credential
+        }
+
+        if let snapshot = try? CodexAuthImporter.importFromDefaultLocations() {
+            if let openAIKey = normalized(snapshot.openAIAPIKey) {
+                let credential = OpenAISTTProvider.Credential(token: openAIKey, mode: .apiKey)
+                cache(credential)
+                return credential
+            }
+            if let codexAccessToken = normalized(snapshot.codexAccessToken) {
+                let credential = OpenAISTTProvider.Credential(
+                    token: codexAccessToken,
+                    mode: .codexOAuth,
+                    accountID: normalized(snapshot.codexAccountID),
+                    chatGPTBaseURL: preferredChatGPTBaseURL()
+                )
+                cache(credential)
+                return credential
+            }
+        }
+
+        if let codexAccessToken = normalized(try keychain.get("codex_access_token")) {
+            let credential = OpenAISTTProvider.Credential(
+                token: codexAccessToken,
+                mode: .codexOAuth,
+                accountID: normalized(try keychain.get("codex_account_id")),
+                chatGPTBaseURL: preferredChatGPTBaseURL()
+            )
+            cache(credential)
+            return credential
+        }
+
+        throw SayItError.authentication(
+            "OpenAI credential is missing. Set openai_api_key, or run Codex login and ensure ~/.codex/auth.json contains usable credentials."
+        )
     }
 
     func invalidate() {
-        cachedKey = nil
+        cachedCredential = nil
+        cachedSTTCredential = nil
+    }
+
+    private func cache(_ credential: OpenAISTTProvider.Credential) {
+        cachedCredential = credential.token
+        cachedSTTCredential = credential
+    }
+
+    private func preferredChatGPTBaseURL() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        if let value = normalized(env["SAYIT_CHATGPT_BASE_URL"]) {
+            return value
+        }
+        if let value = normalized(env["CHATGPT_BASE_URL"]) {
+            return value
+        }
+        return nil
+    }
+
+    private func normalized(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

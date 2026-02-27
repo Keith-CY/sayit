@@ -4,47 +4,74 @@ import Foundation
 public struct OpenAISTTProvider: STTProvider {
     public let id = "openai"
 
-    private let apiKeyProvider: @Sendable () async throws -> String
+    public struct Credential: Sendable {
+        public enum Mode: Sendable {
+            case apiKey
+            case codexOAuth
+        }
+
+        public var token: String
+        public var mode: Mode
+        public var accountID: String?
+        public var chatGPTBaseURL: String?
+
+        public init(token: String, mode: Mode, accountID: String? = nil, chatGPTBaseURL: String? = nil) {
+            self.token = token
+            self.mode = mode
+            self.accountID = accountID
+            self.chatGPTBaseURL = chatGPTBaseURL
+        }
+    }
+
+    private let credentialProvider: @Sendable () async throws -> Credential
     private let baseURL: URL
+
+    public init(
+        baseURL: URL = URL(string: "https://api.openai.com/v1")!,
+        credentialProvider: @escaping @Sendable () async throws -> Credential
+    ) {
+        self.baseURL = baseURL
+        self.credentialProvider = credentialProvider
+    }
 
     public init(
         baseURL: URL = URL(string: "https://api.openai.com/v1")!,
         apiKeyProvider: @escaping @Sendable () async throws -> String
     ) {
-        self.baseURL = baseURL
-        self.apiKeyProvider = apiKeyProvider
+        self.init(baseURL: baseURL) {
+            let token = try await apiKeyProvider()
+            return Credential(token: token, mode: .apiKey)
+        }
     }
 
     public func startStreaming(config: STTStreamConfig) async throws -> AsyncThrowingStream<STTEvent, Error> {
         try await ensureMicrophonePermission()
+        let credential = try await credentialProvider()
         let mode = Self.resolvedStreamingMode()
-        if mode == .realtimeWebSocket {
-            return try await startRealtimeStreaming(config: config)
+        if mode == .realtimeWebSocket && credential.mode == .apiKey {
+            return try await startRealtimeStreaming(config: config, credential: credential)
         }
-        return try await startChunkedStreaming(config: config)
+        return try await startChunkedStreaming(config: config, credential: credential)
     }
 
     public func transcribeFile(url: URL, config: STTFileConfig) async throws -> [TranscriptSegment] {
-        let apiKey = try await apiKeyProvider()
-        return try await transcribeFile(url: url, config: config, apiKey: apiKey)
+        let credential = try await credentialProvider()
+        return try await transcribeFile(url: url, config: config, credential: credential)
     }
 
-    private func startChunkedStreaming(config: STTStreamConfig) async throws -> AsyncThrowingStream<STTEvent, Error> {
-        let apiKey = try await apiKeyProvider()
+    private func startChunkedStreaming(config: STTStreamConfig, credential: Credential) async throws -> AsyncThrowingStream<STTEvent, Error> {
         return LocalChunkedSTTStreamer.start(providerID: id, config: config) { url, fileConfig in
-            try await transcribeFile(url: url, config: fileConfig, apiKey: apiKey)
+            try await transcribeFile(url: url, config: fileConfig, credential: credential)
         }
     }
 
-    private func startRealtimeStreaming(config: STTStreamConfig) async throws -> AsyncThrowingStream<STTEvent, Error> {
-        let apiKey = try await apiKeyProvider()
-
+    private func startRealtimeStreaming(config: STTStreamConfig, credential: Credential) async throws -> AsyncThrowingStream<STTEvent, Error> {
         guard let wsURL = URL(string: "wss://api.openai.com/v1/realtime?intent=transcription") else {
             throw SayItError.invalidConfiguration("Invalid realtime websocket URL")
         }
 
         var request = URLRequest(url: wsURL)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(credential.token)", forHTTPHeaderField: "Authorization")
         request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
 
         return AsyncThrowingStream { continuation in
@@ -94,32 +121,30 @@ public struct OpenAISTTProvider: STTProvider {
         }
     }
 
-    private func transcribeFile(url: URL, config: STTFileConfig, apiKey: String) async throws -> [TranscriptSegment] {
-        var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
-        let boundary = "Boundary-\(UUID().uuidString)"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try makeMultipartBody(fileURL: url, boundary: boundary, locale: config.locale)
+    private func transcribeFile(url: URL, config: STTFileConfig, credential: Credential) async throws -> [TranscriptSegment] {
+        let request: URLRequest
+        switch credential.mode {
+        case .apiKey:
+            request = try makeOpenAITranscribeRequest(fileURL: url, config: config, token: credential.token)
+        case .codexOAuth:
+            request = try makeChatGPTTranscribeRequest(fileURL: url, token: credential.token, accountID: credential.accountID, baseURL: credential.chatGPTBaseURL)
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            throw SayItError.network("No HTTP response from OpenAI transcription API")
+            throw SayItError.network("No HTTP response from transcription API")
         }
 
         guard (200...299).contains(http.statusCode) else {
             if http.statusCode == 401 || http.statusCode == 429 || http.statusCode >= 500 {
                 throw ProviderHTTPError(providerID: id, statusCode: http.statusCode, message: String(data: data, encoding: .utf8) ?? "")
             }
-            throw SayItError.network("OpenAI transcription failed with status \(http.statusCode)")
+            throw SayItError.network("Transcription failed with status \(http.statusCode)")
         }
 
         let payload = try JSONDecoder().decode(OpenAITranscriptionResponse.self, from: data)
         let text = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            throw SayItError.network("OpenAI returned empty transcript")
-        }
+        guard !text.isEmpty else { return [] }
         let segment = TranscriptSegment(
             sessionID: UUID(),
             sequence: 0,
@@ -131,6 +156,31 @@ public struct OpenAISTTProvider: STTProvider {
             latencyMs: 0
         )
         return [segment]
+    }
+
+    private func makeOpenAITranscribeRequest(fileURL: URL, config: STTFileConfig, token: String) throws -> URLRequest {
+        var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try makeOpenAIMultipartBody(fileURL: fileURL, boundary: boundary, locale: config.locale)
+        return request
+    }
+
+    private func makeChatGPTTranscribeRequest(fileURL: URL, token: String, accountID: String?, baseURL: String?) throws -> URLRequest {
+        var request = URLRequest(url: Self.chatGPTTranscribeURL(baseURL: baseURL))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let accountID = accountID?.trimmingCharacters(in: .whitespacesAndNewlines), !accountID.isEmpty {
+            request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+        }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try makeChatGPTMultipartBody(fileURL: fileURL, boundary: boundary)
+        return request
     }
 
     private func receiveRealtimeEvents(
@@ -201,7 +251,7 @@ public struct OpenAISTTProvider: STTProvider {
         }
     }
 
-    private func makeMultipartBody(fileURL: URL, boundary: String, locale: String) throws -> Data {
+    private func makeOpenAIMultipartBody(fileURL: URL, boundary: String, locale: String) throws -> Data {
         var data = Data()
 
         func append(_ value: String) {
@@ -230,12 +280,35 @@ public struct OpenAISTTProvider: STTProvider {
         return data
     }
 
+    private func makeChatGPTMultipartBody(fileURL: URL, boundary: String) throws -> Data {
+        var data = Data()
+
+        func append(_ value: String) {
+            data.append(value.data(using: .utf8)!)
+        }
+
+        let fileData = try Data(contentsOf: fileURL)
+        let fileName = fileURL.lastPathComponent
+        let mimeType = mimeType(for: fileURL)
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
+        append("Content-Type: \(mimeType)\r\n\r\n")
+        data.append(fileData)
+        append("\r\n")
+
+        append("--\(boundary)--\r\n")
+        return data
+    }
+
     private func mimeType(for fileURL: URL) -> String {
         switch fileURL.pathExtension.lowercased() {
         case "m4a", "mp4":
             return "audio/mp4"
         case "wav":
             return "audio/wav"
+        case "aif", "aiff":
+            return "audio/aiff"
         case "webm":
             return "audio/webm"
         case "ogg":
@@ -280,6 +353,28 @@ public struct OpenAISTTProvider: STTProvider {
             return .realtimeWebSocket
         }
         return .chunkedUpload
+    }
+
+    static func chatGPTTranscribeURL(baseURL: String?) -> URL {
+        let normalized = normalizedChatGPTBaseURL(from: baseURL)
+        return normalized.appendingPathComponent("transcribe")
+    }
+
+    static func normalizedChatGPTBaseURL(from rawBaseURL: String?) -> URL {
+        let fallback = URL(string: "https://chatgpt.com/backend-api")!
+        guard let rawBaseURL else { return fallback }
+        let trimmed = rawBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, var url = URL(string: trimmed) else { return fallback }
+
+        // Keep path canonical and remove trailing slash segments.
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let lower = path.lowercased()
+        if lower.isEmpty {
+            url.append(path: "backend-api")
+        } else if !lower.contains("backend-api") {
+            url.append(path: "backend-api")
+        }
+        return url
     }
 }
 

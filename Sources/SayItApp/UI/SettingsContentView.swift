@@ -382,6 +382,10 @@ struct SettingsContentView: View {
 
     private var modelsPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if modelsViewModel.catalog.isEmpty {
+                fasterWhisperRuntimeCard
+            }
+
             ForEach(modelsViewModel.catalog) { model in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -450,6 +454,47 @@ struct SettingsContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var fasterWhisperRuntimeCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(language.text("settings.fwRuntimeTitle"))
+                .font(.headline)
+
+            Text(language.text("settings.fwRuntimeDesc"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("\(language.text("settings.fwRuntimePath")): \(modelsViewModel.fasterWhisperPythonPath)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            HStack(spacing: 8) {
+                Button(language.text("settings.fwInstallRuntime")) {
+                    Task { await modelsViewModel.installFasterWhisperRuntime() }
+                }
+                .disabled(modelsViewModel.isRuntimeBusy)
+
+                Button(language.text("settings.fwPreloadSmall")) {
+                    Task { await modelsViewModel.preloadFasterWhisperSmallModel() }
+                }
+                .disabled(modelsViewModel.isRuntimeBusy || !modelsViewModel.fasterWhisperRuntimeReady)
+
+                Button(language.text("settings.fwDiagnose")) {
+                    Task { await modelsViewModel.diagnoseFasterWhisperRuntime() }
+                }
+                .disabled(modelsViewModel.isRuntimeBusy)
+            }
+
+            if modelsViewModel.isRuntimeBusy {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .cornerRadius(8)
     }
 
     private func title(for panel: SettingsPanel) -> String {

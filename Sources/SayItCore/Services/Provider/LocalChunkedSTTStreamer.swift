@@ -88,9 +88,9 @@ enum LocalChunkedSTTStreamer {
 
     static func resolvedChunkSeconds(environment: [String: String] = ProcessInfo.processInfo.environment) -> TimeInterval {
         let raw = environment["SAYIT_LOCAL_STREAM_CHUNK_SEC"] ?? ""
-        let value = Double(raw) ?? 2.5
+        let value = Double(raw) ?? 0.8
         // Keep chunks practical: too short causes poor accuracy, too long hurts latency.
-        return min(max(value, 1.0), 10.0)
+        return min(max(value, 0.3), 10.0)
     }
 
     static func transcribeChunk(

@@ -4,10 +4,10 @@ import XCTest
 
 final class LocalChunkedSTTStreamerTests: XCTestCase {
     func testResolvedChunkSecondsUsesDefaultAndBounds() {
-        XCTAssertEqual(LocalChunkedSTTStreamer.resolvedChunkSeconds(environment: [:]), 2.5, accuracy: 0.001)
+        XCTAssertEqual(LocalChunkedSTTStreamer.resolvedChunkSeconds(environment: [:]), 0.8, accuracy: 0.001)
         XCTAssertEqual(
             LocalChunkedSTTStreamer.resolvedChunkSeconds(environment: ["SAYIT_LOCAL_STREAM_CHUNK_SEC": "0.1"]),
-            1.0,
+            0.3,
             accuracy: 0.001
         )
         XCTAssertEqual(

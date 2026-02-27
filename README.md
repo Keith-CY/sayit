@@ -1,11 +1,10 @@
 # SayIt (macOS)
 
 Swift-native macOS dictation app:
-- realtime STT (OpenAI primary)
-- local fallback providers (Whisper + Parakeet + Moonshine, all in-process; Moonshine is compatibility mode)
+- realtime STT (faster_whisper only)
 - refine (Codex OAuth or OpenAI API)
 - history, search, export (TXT/MD/JSON)
-- local model manager with resume download (`.part`) + optional sha256 verification
+- local model manager
 - menu tray + global hotkey
 - CLI + desktop app
 
@@ -36,10 +35,11 @@ swift run sayit --help
 ## First-time setup
 
 1. Open **Settings** tab.
-2. Fill `OpenAI API Key` and click save.
-3. (Optional) Use **Codex OAuth Login** section to run device-auth login and auto-import tokens.
-4. Configure default pipeline and edit stages in **Text Pipeline Editor**.
-5. Grant microphone permission when prompted.
+2. Configure default pipeline and edit stages in **Text Pipeline Editor**.
+3. Grant microphone permission when prompted.
+
+Notes:
+- STT is fixed to `faster_whisper`.
 
 ## Realtime usage
 
@@ -49,47 +49,58 @@ swift run sayit --help
 - Click **Refine** or **Speak** for post-processing and TTS.
 - History tab now supports audio assets: play original audio and retranscribe into a new session.
 
-## Local providers
+## Local STT
 
 Optional env for local realtime chunking:
-- `SAYIT_LOCAL_STREAM_CHUNK_SEC` (default `2.5`, range `1.0`-`10.0`)
+- `SAYIT_LOCAL_STREAM_CHUNK_SEC` (default `0.8`, range `0.3`-`10.0`)
 
-Whisper provider runs fully in-process via `whisper.cpp` (Swift package integration), no external shell command required.
-Default model path:
-- `~/Library/Application Support/SayIt/models/whisper/ggml-base.bin`
+Faster-Whisper provider runs local command transcription with chunked recording:
+- default model: `small`
+- default executables probe order: `SAYIT_FASTER_WHISPER_PYTHON` (if set), then `python3`
+- optional env:
+  - `SAYIT_FASTER_WHISPER_MODEL` (for example `small`, `base`, `medium`)
+  - `SAYIT_FASTER_WHISPER_PYTHON` (absolute python path, for example venv python)
+  - `SAYIT_FASTER_WHISPER_COMMAND` (full command template with placeholders `{input}` and `{lang}`)
+  - `SAYIT_LOCAL_COMMAND_TIMEOUT_SEC` (default `900`, useful for first-time model pull)
 
-Optional env:
-- `SAYIT_WHISPER_MODEL_PATH` (override model file path)
+Live mode behavior with `faster_whisper`:
+- during recording: captures full session audio
+- after pressing stop: runs one-shot transcription and shows processing progress
 
-Parakeet provider runs in-process via `FluidAudio` CoreML runtime:
-- default behavior: auto-download/load models on first use
-- optional env: `SAYIT_PARAKEET_COREML_PATH` (preloaded CoreML model directory for offline/manual loading)
+Settings -> Local Models:
+- provides `faster_whisper` runtime setup (install runtime / preload small model / diagnose)
 
-Moonshine provider currently uses in-process compatibility runtime:
-- tries Parakeet CoreML runtime first
-- falls back to local Whisper runtime when Parakeet is unavailable
+Example command template (same flow as diagnostic-audio then parse with faster-whisper):
+```bash
+export SAYIT_FASTER_WHISPER_COMMAND="'/root/.openclaw/workspace/.venv-stt/bin/python' - <<'PY' {input} {lang}
+import sys
+from faster_whisper import WhisperModel
 
-Local Models panel:
-- `whisper` download is used directly by Whisper runtime
-- `parakeet/moonshine` downloads are raw archives for native-runtime preparation and inspection
+audio = sys.argv[1]
+language = sys.argv[2].strip()
+if language in ('', 'auto'):
+    language = None
+
+model = WhisperModel('small', device='cpu', compute_type='int8')
+segments, _ = model.transcribe(audio, beam_size=3, vad_filter=True, language=language)
+for seg in segments:
+    text = (seg.text or '').strip()
+    if text:
+        print(f'[{seg.start:6.2f}-{seg.end:6.2f}] {text}')
+PY"
+```
+
+No built-in model download is required when using external `faster_whisper`.
 
 ## CLI quick examples
 
 ```bash
-swift run sayit listen --provider openai --locale zh-Hans --seconds 20
-swift run sayit transcribe --input /tmp/sample.m4a --locale en --provider openai --fallback whisper
+swift run sayit listen --provider faster_whisper --locale zh-Hans --seconds 20
+swift run sayit transcribe --input /tmp/sample.m4a --locale zh-Hans --provider faster_whisper --fallback faster_whisper
 echo "raw text" | swift run sayit refine --provider codex
 swift run sayit pipeline list
 swift run sayit pipeline export-defaults --output ./pipelines.json
 swift run sayit pipeline import --file ./pipelines.json
-swift run sayit models list --json
-swift run sayit models inspect
-swift run sayit models inspect --json
-swift run sayit models verify
-swift run sayit models verify --json
-swift run sayit models cleanup --all
-swift run sayit models cleanup --all --json
-swift run sayit models retry --name ggml-base.bin
 swift run sayit providers test
 swift run sayit auth status-codex
 swift run sayit auth login-codex

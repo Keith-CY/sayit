@@ -151,6 +151,29 @@ struct LiveContentView: View {
                         Text("\(language.text("status")): \(viewModel.status)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if viewModel.isProcessing {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(language.text("live.processing"))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.2), value: viewModel.isProcessing)
+
+                    if viewModel.isProcessing && viewModel.hasDeterminateProcessingProgress {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ProgressView(value: viewModel.processingProgressFraction, total: 1)
+                                .progressViewStyle(.linear)
+                                .tint(LiquidGlassTheme.hotPink)
+
+                            Text(viewModel.processingProgressPercentText)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .animation(.easeInOut(duration: 0.18), value: viewModel.processingCompletedUnits)
                     }
                 }
 

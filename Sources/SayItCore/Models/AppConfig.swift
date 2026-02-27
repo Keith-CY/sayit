@@ -5,7 +5,7 @@ public struct AppConfig: Codable, Sendable {
         public var primary: String
         public var localDefault: String
 
-        public init(primary: String = "openai", localDefault: String = "whisper") {
+        public init(primary: String = "faster_whisper", localDefault: String = "faster_whisper") {
             self.primary = primary
             self.localDefault = localDefault
         }

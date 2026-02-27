@@ -1,6 +1,8 @@
 import AppKit
+@preconcurrency import AVFoundation
 import Foundation
 import SayItCore
+import SwiftUI
 
 @MainActor
 final class LiveTranscriptionViewModel: ObservableObject {
@@ -17,6 +19,9 @@ final class LiveTranscriptionViewModel: ObservableObject {
     @Published var codexOAuthLogs: [String] = []
     @Published var codexOAuthInProgress: Bool = false
     @Published var codexOAuthOverlayVisible: Bool = false
+    @Published var isProcessing: Bool = false
+    @Published var processingCompletedUnits: Int = 0
+    @Published var processingTotalUnits: Int = 0
 
     private let runtime: SayItCoreRuntime?
     private let onHistoryChanged: (() -> Void)?
@@ -25,6 +30,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
     private var codexDeviceAuthTask: Task<Void, Never>?
     private var smoothedAudioLevel: CGFloat = 0
     private var smoothedAudioBands: [CGFloat] = Array(repeating: 0, count: 18)
+    private var processingTaskCount = 0
     private lazy var playbackQueue = SpeechPlaybackQueue { [weak self] count in
         guard let self else { return }
         if count == 0, status.hasPrefix("Speaking") {
@@ -47,7 +53,14 @@ final class LiveTranscriptionViewModel: ObservableObject {
 
     func startRecording() {
         guard !isRecording else { return }
-        streamTask?.cancel()
+        guard streamTask == nil else {
+            status = "Previous session still finishing..."
+            return
+        }
+        guard !isProcessing else {
+            status = "Still processing previous audio..."
+            return
+        }
         streamTask = Task { [weak self] in
             guard let self else { return }
             await self.runStreaming()
@@ -55,7 +68,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
     }
 
     func stopRecording() {
-        guard streamTask != nil else { return }
+        guard isRecording || streamTask != nil else { return }
         streamTask?.cancel()
         partialText = ""
         status = "Stopping..."
@@ -222,22 +235,15 @@ final class LiveTranscriptionViewModel: ObservableObject {
         var streamingPipeline: TextPipeline?
         var streamingPipelineExecutor: PipelineExecutor?
         var streamingFinalSequence = 0
+        var streamingSessionRecorder: SessionAudioRecorder?
         do {
             let config = try runtime.configManager.load()
             let primaryProvider = runtime.sttProvider(for: config.stt.primary)
-            if primaryProvider.id == runtime.primarySTTProvider.id {
-                let hasOpenAIKey = ((try? runtime.keychain.get("openai_api_key")) ?? "").isEmpty == false
-                if !hasOpenAIKey {
-                    status = "OpenAI key unavailable, using local fallback"
-                    await runFallbackCapture(reason: "primary_unavailable")
-                    return
-                }
-            }
 
             let session = TranscriptSession(source: "app_live_stream", locale: config.locale)
             let pipeline = resolveDefaultPipeline(runtime: runtime, config: config)
             let pipelineExecutor = PipelineExecutor(refineProvider: runtime.refineProvider(for: config.refine.primary))
-            let sessionAudioRecorder = shouldRecordSessionAudioInParallel(provider: primaryProvider) ? SessionAudioRecorder() : nil
+            streamingSessionRecorder = shouldRecordSessionAudioInParallel(provider: primaryProvider) ? SessionAudioRecorder() : nil
             streamingSessionID = session.id
             streamingProvider = primaryProvider
             streamingLocale = config.locale
@@ -245,8 +251,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
             streamingPipelineExecutor = pipelineExecutor
             activeSessionID = session.id
             isRecording = true
-            await startLiveMetering()
-            status = "Listening"
+            status = "Starting..."
             partialText = ""
 
             try runtime.historyRepository.createSession(session)
@@ -256,7 +261,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
                     SessionChunkArchive.clear(sessionID: session.id)
                     try? runtime.historyRepository.deleteSession(id: session.id)
                 } else {
-                    if let sessionAudioRecorder {
+                    if let sessionAudioRecorder = streamingSessionRecorder {
                         persistLiveSessionAudioAsset(runtime: runtime, sessionID: session.id, recorder: sessionAudioRecorder)
                         SessionChunkArchive.clear(sessionID: session.id)
                     } else {
@@ -270,7 +275,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
                 onHistoryChanged?()
             }
 
-            if let sessionAudioRecorder {
+            if let sessionAudioRecorder = streamingSessionRecorder {
                 do {
                     _ = try await sessionAudioRecorder.startRecording()
                 } catch {
@@ -288,6 +293,8 @@ final class LiveTranscriptionViewModel: ObservableObject {
                     archiveChunks: true
                 )
             )
+            await startLiveMetering()
+            status = "Listening"
 
             for try await event in stream {
                 switch event.kind {
@@ -336,29 +343,37 @@ final class LiveTranscriptionViewModel: ObservableObject {
             }
 
             if emittedFinalCount == 0 {
-                if let sessionAudioRecorder {
-                    let recovered = try await recoverTranscriptFromSessionRecording(
-                        runtime: runtime,
-                        sessionID: session.id,
-                        recorder: sessionAudioRecorder,
-                        provider: primaryProvider,
-                        locale: config.locale,
-                        pipeline: pipeline,
-                        pipelineExecutor: pipelineExecutor,
-                        startSequence: finalSequence
-                    )
+                status = "Processing captured audio..."
+                if let sessionAudioRecorder = streamingSessionRecorder {
+                    let recovered = try await withProcessing {
+                        try await recoverTranscriptFromSessionRecording(
+                            runtime: runtime,
+                            sessionID: session.id,
+                            recorder: sessionAudioRecorder,
+                            provider: primaryProvider,
+                            locale: config.locale,
+                            pipeline: pipeline,
+                            pipelineExecutor: pipelineExecutor,
+                            startSequence: finalSequence
+                        )
+                    }
                     emittedFinalCount += recovered
                     finalSequence += recovered
+                    if recovered > 0 {
+                        streamingSessionRecorder = nil
+                    }
                 } else {
-                    let recovered = try await recoverTranscriptFromArchivedChunks(
-                        runtime: runtime,
-                        sessionID: session.id,
-                        provider: primaryProvider,
-                        locale: config.locale,
-                        pipeline: pipeline,
-                        pipelineExecutor: pipelineExecutor,
-                        startSequence: finalSequence
-                    )
+                    let recovered = try await withProcessing {
+                        try await recoverTranscriptFromArchivedChunks(
+                            runtime: runtime,
+                            sessionID: session.id,
+                            provider: primaryProvider,
+                            locale: config.locale,
+                            pipeline: pipeline,
+                            pipelineExecutor: pipelineExecutor,
+                            startSequence: finalSequence
+                        )
+                    }
                     emittedFinalCount += recovered
                     finalSequence += recovered
                 }
@@ -382,39 +397,99 @@ final class LiveTranscriptionViewModel: ObservableObject {
                let pipelineExecutor = streamingPipelineExecutor
             {
                 var recovered = 0
-                recovered = (try? await recoverTranscriptFromSavedSessionAudio(
-                    runtime: runtime,
-                    sessionID: sessionID,
-                    provider: provider,
-                    locale: streamingLocale,
-                    pipeline: streamingPipeline,
-                    pipelineExecutor: pipelineExecutor,
-                    startSequence: streamingFinalSequence
-                )) ?? 0
+                var recoveryError: Error?
+                status = "Processing captured audio..."
+                if let sessionAudioRecorder = streamingSessionRecorder {
+                    do {
+                        recovered = try await withProcessing {
+                            try await recoverTranscriptFromSessionRecording(
+                                runtime: runtime,
+                                sessionID: sessionID,
+                                recorder: sessionAudioRecorder,
+                                provider: provider,
+                                locale: streamingLocale,
+                                pipeline: streamingPipeline,
+                                pipelineExecutor: pipelineExecutor,
+                                startSequence: streamingFinalSequence
+                            )
+                        }
+                    } catch {
+                        recoveryError = error
+                        recovered = 0
+                    }
+                    if recovered > 0 {
+                        streamingSessionRecorder = nil
+                    }
+                }
                 if recovered == 0 {
-                    recovered = (try? await recoverTranscriptFromArchivedChunks(
-                        runtime: runtime,
-                        sessionID: sessionID,
-                        provider: provider,
-                        locale: streamingLocale,
-                        pipeline: streamingPipeline,
-                        pipelineExecutor: pipelineExecutor,
-                        startSequence: streamingFinalSequence
-                    )) ?? 0
+                    do {
+                        recovered = try await withProcessing {
+                            try await recoverTranscriptFromSavedSessionAudio(
+                                runtime: runtime,
+                                sessionID: sessionID,
+                                provider: provider,
+                                locale: streamingLocale,
+                                pipeline: streamingPipeline,
+                                pipelineExecutor: pipelineExecutor,
+                                startSequence: streamingFinalSequence
+                            )
+                        }
+                    } catch {
+                        if recoveryError == nil {
+                            recoveryError = error
+                        }
+                        recovered = 0
+                    }
+                }
+                if recovered == 0 {
+                    do {
+                        recovered = try await withProcessing {
+                            try await recoverTranscriptFromArchivedChunks(
+                                runtime: runtime,
+                                sessionID: sessionID,
+                                provider: provider,
+                                locale: streamingLocale,
+                                pipeline: streamingPipeline,
+                                pipelineExecutor: pipelineExecutor,
+                                startSequence: streamingFinalSequence
+                            )
+                        }
+                    } catch {
+                        if recoveryError == nil {
+                            recoveryError = error
+                        }
+                        recovered = 0
+                    }
                 }
                 if recovered > 0 {
                     status = "Saved to history (\(provider.id))"
                     return
                 }
+                if let recoveryError {
+                    status = "Processing failed (\(provider.id)): \(recoveryError.localizedDescription)"
+                    return
+                }
             }
-            status = "Stopped"
+            if emittedFinalCount > 0, let provider = streamingProvider {
+                status = "Saved to history (\(provider.id))"
+            } else if let provider = streamingProvider {
+                status = "No speech recognized (\(provider.id))"
+            } else {
+                status = "Stopped"
+            }
         } catch {
-            fallbackTriggered = true
-            await runFallbackCapture(reason: "stream_failed")
-            if emittedFinalCount == 0, let primarySessionID {
-                SessionChunkArchive.clear(sessionID: primarySessionID)
-                try? runtime.historyRepository.deleteSession(id: primarySessionID)
-                onHistoryChanged?()
+            let reason = fallbackReason(for: error)
+            if shouldAutoFallbackInLive() && shouldFallbackAfterPrimaryFailure(reason: reason) {
+                status = fallbackStatusMessage(reason: reason)
+                fallbackTriggered = true
+                await runFallbackCapture(reason: reason)
+                if emittedFinalCount == 0, let primarySessionID {
+                    SessionChunkArchive.clear(sessionID: primarySessionID)
+                    try? runtime.historyRepository.deleteSession(id: primarySessionID)
+                    onHistoryChanged?()
+                }
+            } else {
+                status = "Primary STT failed (\(reason)): \(error.localizedDescription)"
             }
         }
     }
@@ -481,7 +556,12 @@ final class LiveTranscriptionViewModel: ObservableObject {
                 // Preserve transcript path even if audio persistence fails.
             }
 
-            let recoveredSegments = try await transcribeWithRetry(provider: provider, url: tempURL, locale: config.locale)
+            let fallbackAudioUnits = progressUnitsForAudioFile(tempURL)
+            startProcessingProgress(totalUnits: fallbackAudioUnits)
+            let recoveredSegments = try await withProcessing {
+                try await transcribeWithRetry(provider: provider, url: tempURL, locale: config.locale)
+            }
+            advanceProcessingProgress(by: fallbackAudioUnits)
             var savedCount = 0
             var sequence = 0
             for raw in recoveredSegments {
@@ -518,6 +598,8 @@ final class LiveTranscriptionViewModel: ObservableObject {
 
     private func runFileTranscription(url: URL) async {
         defer { streamTask = nil }
+        beginProcessing()
+        defer { endProcessing() }
 
         guard let runtime else {
             status = "Core runtime not available"
@@ -538,6 +620,8 @@ final class LiveTranscriptionViewModel: ObservableObject {
             status = "Transcribing file"
             partialText = ""
             currentText = ""
+            let fileAudioUnits = progressUnitsForAudioFile(url)
+            startProcessingProgress(totalUnits: fileAudioUnits)
 
             try runtime.historyRepository.createSession(session)
             defer {
@@ -563,6 +647,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
                     try await localFallback.transcribeFile(url: url, config: STTFileConfig(locale: config.locale))
                 }
             )
+            advanceProcessingProgress(by: fileAudioUnits)
 
             if let fallbackEvent {
                 try runtime.historyRepository.saveFallbackEvent(fallbackEvent)
@@ -609,6 +694,9 @@ final class LiveTranscriptionViewModel: ObservableObject {
     }
 
     private func runRefine(text: String) async {
+        beginProcessing()
+        defer { endProcessing() }
+
         guard let runtime else {
             status = "Refine unavailable"
             return
@@ -640,6 +728,9 @@ final class LiveTranscriptionViewModel: ObservableObject {
     }
 
     private func runTTS(text: String) async {
+        beginProcessing()
+        defer { endProcessing() }
+
         guard let runtime else {
             status = "TTS unavailable"
             return
@@ -669,6 +760,151 @@ final class LiveTranscriptionViewModel: ObservableObject {
 
     private func localProvider(runtime: SayItCoreRuntime, id: String) -> STTProvider {
         runtime.sttProvider(for: id)
+    }
+
+    var hasDeterminateProcessingProgress: Bool {
+        processingTotalUnits > 0
+    }
+
+    var processingProgressFraction: Double {
+        guard processingTotalUnits > 0 else { return 0 }
+        return min(1, max(0, Double(processingCompletedUnits) / Double(processingTotalUnits)))
+    }
+
+    var processingProgressPercentText: String {
+        guard processingTotalUnits > 0 else { return "" }
+        let percent = Int((processingProgressFraction * 100).rounded())
+        let completedSeconds = Double(processingCompletedUnits) / 1000
+        let totalSeconds = Double(processingTotalUnits) / 1000
+        return String(format: "%d%% (%.1fs/%.1fs)", percent, completedSeconds, totalSeconds)
+    }
+
+    private func beginProcessing() {
+        processingTaskCount += 1
+        isProcessing = true
+    }
+
+    private func endProcessing() {
+        processingTaskCount = max(0, processingTaskCount - 1)
+        isProcessing = processingTaskCount > 0
+        if !isProcessing {
+            resetProcessingProgress()
+        }
+    }
+
+    private func withProcessing<T>(
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        beginProcessing()
+        defer { endProcessing() }
+        return try await operation()
+    }
+
+    private func startProcessingProgress(totalUnits: Int) {
+        let total = max(1, totalUnits)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            processingTotalUnits = total
+            processingCompletedUnits = 0
+        }
+    }
+
+    private func advanceProcessingProgress(by units: Int = 1) {
+        guard processingTotalUnits > 0 else { return }
+        let step = max(1, units)
+        withAnimation(.easeInOut(duration: 0.16)) {
+            processingCompletedUnits = min(processingTotalUnits, processingCompletedUnits + step)
+        }
+    }
+
+    private func resetProcessingProgress() {
+        processingCompletedUnits = 0
+        processingTotalUnits = 0
+    }
+
+    private func progressUnitsForAudioFile(_ fileURL: URL) -> Int {
+        let durationMs = measuredAudioDurationMs(for: fileURL)
+        if durationMs > 0 {
+            return durationMs
+        }
+        // Keep determinate progress even when metadata read fails.
+        return 1_000
+    }
+
+    private func measuredAudioDurationMs(for fileURL: URL) -> Int {
+        guard let file = try? AVAudioFile(forReading: fileURL) else {
+            return 0
+        }
+        let sampleRate = file.processingFormat.sampleRate
+        guard sampleRate > 0 else { return 0 }
+        let seconds = Double(file.length) / sampleRate
+        guard seconds.isFinite, seconds > 0 else { return 0 }
+        return Int(seconds * 1000)
+    }
+
+    private func fallbackReason(for error: Error) -> String {
+        if let httpError = error as? ProviderHTTPError {
+            switch httpError.statusCode {
+            case 401:
+                return "auth_401"
+            case 429:
+                return "rate_limit"
+            case 500...599:
+                return "server_error"
+            default:
+                return "http_\(httpError.statusCode)"
+            }
+        }
+
+        if error is ProviderTimeoutError {
+            return "timeout"
+        }
+
+        if let sayItError = error as? SayItError {
+            switch sayItError {
+            case .authentication:
+                return "auth_unavailable"
+            case .network:
+                return "network"
+            case .storage:
+                return "storage"
+            case .unavailable:
+                return "provider_unavailable"
+            default:
+                return "internal"
+            }
+        }
+
+        return "stream_failed"
+    }
+
+    private func fallbackStatusMessage(reason: String) -> String {
+        switch reason {
+        case "auth_unavailable", "auth_401":
+            return "Primary STT auth unavailable, switching to local fallback"
+        case "rate_limit":
+            return "Primary STT quota reached, switching to local fallback"
+        case "timeout", "network":
+            return "Primary STT network timeout, switching to local fallback"
+        default:
+            return "Primary STT unavailable, switching to local fallback"
+        }
+    }
+
+    private func shouldFallbackAfterPrimaryFailure(reason: String) -> Bool {
+        switch reason {
+        case "rate_limit", "timeout", "network", "server_error", "provider_unavailable", "storage":
+            return true
+        default:
+            // Surface auth/client failures directly so OpenAI capability checks are explicit.
+            return false
+        }
+    }
+
+    private func shouldAutoFallbackInLive() -> Bool {
+        let raw = ProcessInfo.processInfo.environment["SAYIT_LIVE_AUTO_FALLBACK"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
     }
 
     private func appendText(_ text: String) {
@@ -788,6 +1024,8 @@ final class LiveTranscriptionViewModel: ObservableObject {
     ) async throws -> Int {
         guard let tempURL = recorder.stopRecording() else { return 0 }
         defer { try? FileManager.default.removeItem(at: tempURL) }
+        let totalUnits = progressUnitsForAudioFile(tempURL)
+        startProcessingProgress(totalUnits: totalUnits)
 
         do {
             let audioAsset = try runtime.audioAssetStore.importFile(tempURL, sessionID: sessionID)
@@ -797,6 +1035,7 @@ final class LiveTranscriptionViewModel: ObservableObject {
         }
 
         let recoveredSegments = try await transcribeWithRetry(provider: provider, url: tempURL, locale: locale)
+        advanceProcessingProgress(by: totalUnits)
         var recoveredCount = 0
         var nextSequence = startSequence
         for raw in recoveredSegments {
@@ -833,11 +1072,18 @@ final class LiveTranscriptionViewModel: ObservableObject {
     ) async throws -> Int {
         let chunkURLs = SessionChunkArchive.listChunks(sessionID: sessionID)
         guard !chunkURLs.isEmpty else { return 0 }
+        let existingChunks = chunkURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !existingChunks.isEmpty else { return 0 }
+        let weightedChunks = existingChunks.map { (url: $0, units: progressUnitsForAudioFile($0)) }
+        let totalUnits = weightedChunks.reduce(0) { $0 + $1.units }
+        startProcessingProgress(totalUnits: totalUnits)
 
         var recoveredCount = 0
         var nextSequence = startSequence
 
-        for chunkURL in chunkURLs where FileManager.default.fileExists(atPath: chunkURL.path) {
+        for weightedChunk in weightedChunks {
+            defer { advanceProcessingProgress(by: weightedChunk.units) }
+            let chunkURL = weightedChunk.url
             let recoveredSegments: [TranscriptSegment]
             do {
                 recoveredSegments = try await transcribeWithRetry(provider: provider, url: chunkURL, locale: locale)
@@ -887,8 +1133,16 @@ final class LiveTranscriptionViewModel: ObservableObject {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return 0
         }
+        let totalUnits: Int
+        if asset.durationMs > 0 {
+            totalUnits = asset.durationMs
+        } else {
+            totalUnits = progressUnitsForAudioFile(fileURL)
+        }
+        startProcessingProgress(totalUnits: totalUnits)
 
         let recoveredSegments = try await transcribeWithRetry(provider: provider, url: fileURL, locale: locale)
+        advanceProcessingProgress(by: totalUnits)
         var recoveredCount = 0
         var nextSequence = startSequence
         for raw in recoveredSegments {

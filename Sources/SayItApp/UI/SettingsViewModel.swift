@@ -18,8 +18,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var selectedPipelineID: UUID?
     @Published var editingPipelineID: UUID?
     @Published var selectedLocale: String = "zh-Hans"
-    @Published var selectedPrimarySTT: String = "openai"
-    @Published var selectedLocalFallback: String = "whisper"
+    @Published var selectedPrimarySTT: String = "faster_whisper"
+    @Published var selectedLocalFallback: String = "faster_whisper"
     @Published var selectedRefinePrimary: String = "codex_oauth"
     @Published var selectedTTSPrimary: String = "openai_tts"
     @Published var hotkeyKeyCode: UInt32 = AppConfig.HotkeyConfig().keyCode
@@ -35,8 +35,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var status: String = ""
 
     let availableLocales: [String] = ["zh-Hans", "en", "ja"]
-    let availablePrimarySTT: [String] = ["openai", "whisper", "parakeet", "moonshine"]
-    let availableLocalFallbacks: [String] = ["whisper", "parakeet", "moonshine"]
+    let availablePrimarySTT: [String] = ["faster_whisper"]
+    let availableLocalFallbacks: [String] = ["faster_whisper"]
     let availableRefineProviders: [String] = ["codex_oauth", "openai_api"]
     let availableTTSProviders: [String] = ["openai_tts", "system_tts"]
 
@@ -77,8 +77,8 @@ final class SettingsViewModel: ObservableObject {
             selectedPipelineID = config.pipeline.defaultID ?? availablePipelines.first?.id
             editingPipelineID = selectedPipelineID ?? availablePipelines.first?.id
             selectedLocale = config.locale
-            selectedPrimarySTT = config.fallbackPolicy.primarySTT.isEmpty ? config.stt.primary : config.fallbackPolicy.primarySTT
-            selectedLocalFallback = config.fallbackPolicy.localFallback.isEmpty ? config.stt.localDefault : config.fallbackPolicy.localFallback
+            selectedPrimarySTT = "faster_whisper"
+            selectedLocalFallback = "faster_whisper"
             selectedRefinePrimary = config.refine.primary
             selectedTTSPrimary = config.tts.primary
             hotkeyKeyCode = config.hotkey.keyCode
@@ -252,10 +252,10 @@ final class SettingsViewModel: ObservableObject {
             var config = try runtime.configManager.load()
             config.pipeline.defaultID = selectedPipelineID ?? availablePipelines.first?.id
             config.locale = selectedLocale
-            config.stt.primary = selectedPrimarySTT
-            config.stt.localDefault = selectedLocalFallback
-            config.fallbackPolicy.primarySTT = selectedPrimarySTT
-            config.fallbackPolicy.localFallback = selectedLocalFallback
+            config.stt.primary = "faster_whisper"
+            config.stt.localDefault = "faster_whisper"
+            config.fallbackPolicy.primarySTT = "faster_whisper"
+            config.fallbackPolicy.localFallback = "faster_whisper"
             config.refine.primary = selectedRefinePrimary
             config.tts.primary = selectedTTSPrimary
             config.hotkey.keyCode = hotkeyKeyCode

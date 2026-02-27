@@ -38,7 +38,7 @@ struct OnboardingView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("OpenAI API Key is required for cloud realtime transcription. Save it in Settings tab or keychain service com.sayit.credentials with account openai_api_key.")
+            Text("STT is configured to use faster_whisper only. Ensure local faster_whisper runtime is available before recording.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

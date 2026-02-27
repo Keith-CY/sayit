@@ -20,14 +20,31 @@ enum LocalCommandTranscriber {
             return cleaned
         }
 
+        var failures: [String] = []
         for command in defaultCommands {
-            guard let executable = resolveExecutable(command.executable) else { continue }
-            let args = command.makeArgs(fileURL, language)
-            let output = try await runProcess(executable: executable, arguments: args, environment: env)
-            let cleaned = cleanTranscript(output.stdout)
-            if !cleaned.isEmpty {
-                return cleaned
+            guard let executable = resolveExecutable(command.executable) else {
+                failures.append("\(command.executable): executable not found")
+                continue
             }
+            let args = command.makeArgs(fileURL, language)
+            do {
+                let output = try await runProcessAllowingCancelledContext(
+                    executable: executable,
+                    arguments: args,
+                    environment: env
+                )
+                let cleaned = cleanTranscript(output.stdout)
+                if !cleaned.isEmpty {
+                    return cleaned
+                }
+                failures.append("\(command.executable): command returned empty transcript")
+            } catch {
+                failures.append("\(command.executable): \(error.localizedDescription)")
+            }
+        }
+
+        if !failures.isEmpty {
+            throw SayItError.unavailable("\(providerID) local command failed: \(failures.joined(separator: " | "))")
         }
 
         throw SayItError.unavailable(
@@ -65,7 +82,11 @@ enum LocalCommandTranscriber {
         let script = template
             .replacingOccurrences(of: "{input}", with: shellEscape(fileURL.path))
             .replacingOccurrences(of: "{lang}", with: shellEscape(language))
-        let output = try await runProcess(executable: "/bin/zsh", arguments: ["-lc", script], environment: ProcessInfo.processInfo.environment)
+        let output = try await runProcessAllowingCancelledContext(
+            executable: "/bin/zsh",
+            arguments: ["-lc", script],
+            environment: ProcessInfo.processInfo.environment
+        )
         return output.stdout
     }
 
@@ -85,7 +106,8 @@ enum LocalCommandTranscriber {
     }
 
     static func runProcess(executable: String, arguments: [String], environment: [String: String]) async throws -> ProcessOutput {
-        try await withThrowingTaskGroup(of: ProcessOutput.self) { group in
+        let timeoutSeconds = commandTimeoutSeconds(environment: environment)
+        return try await withThrowingTaskGroup(of: ProcessOutput.self) { group in
             group.addTask {
                 try await withCheckedThrowingContinuation { continuation in
                     DispatchQueue.global(qos: .userInitiated).async {
@@ -120,7 +142,8 @@ enum LocalCommandTranscriber {
             }
 
             group.addTask {
-                try await Task.sleep(nanoseconds: 180_000_000_000)
+                let nanos = UInt64(timeoutSeconds * 1_000_000_000)
+                try await Task.sleep(nanoseconds: nanos)
                 throw ProviderTimeoutError(providerID: "local_command")
             }
 
@@ -130,6 +153,26 @@ enum LocalCommandTranscriber {
         }
     }
 
+    static func runProcessAllowingCancelledContext(
+        executable: String,
+        arguments: [String],
+        environment: [String: String]
+    ) async throws -> ProcessOutput {
+        if Task.isCancelled {
+            return try await Task.detached(priority: .userInitiated) {
+                try await runProcess(executable: executable, arguments: arguments, environment: environment)
+            }.value
+        }
+        return try await runProcess(executable: executable, arguments: arguments, environment: environment)
+    }
+
+    static func commandTimeoutSeconds(environment: [String: String]) -> Double {
+        let raw = environment["SAYIT_LOCAL_COMMAND_TIMEOUT_SEC"] ?? ""
+        let parsed = Double(raw) ?? 900
+        // Keep bounds sane: enough for first-time model pull, avoid hanging forever.
+        return min(max(parsed, 30), 7200)
+    }
+
     static func cleanTranscript(_ text: String) -> String {
         let rawLines = text
             .components(separatedBy: .newlines)
@@ -137,6 +180,7 @@ enum LocalCommandTranscriber {
             .filter { !$0.isEmpty }
 
         let lines = rawLines.compactMap { line -> String? in
+            let lowercase = line.lowercased()
             if line.hasPrefix("[") && line.contains("]") {
                 let parts = line.split(separator: "]", maxSplits: 1, omittingEmptySubsequences: true)
                 if parts.count == 2 {
@@ -144,7 +188,10 @@ enum LocalCommandTranscriber {
                     return cleaned.isEmpty ? nil : cleaned
                 }
             }
-            if line.lowercased().hasPrefix("whisper") || line.lowercased().contains("loading model") {
+            if lowercase.hasPrefix("whisper") || lowercase.contains("loading model") {
+                return nil
+            }
+            if lowercase.hasPrefix("lang ") || lowercase.hasPrefix("language ") {
                 return nil
             }
             return line

@@ -214,7 +214,10 @@ struct SayItCLI {
             throw SayItError.invalidConfiguration("No input text provided on stdin")
         }
 
-        let provider: RefineProvider = providerName == "openai" ? runtime.openAIRefineProvider : runtime.codexRefineProvider
+        let provider: RefineProvider = runtime.codexRefineProvider
+        if providerName != "codex" {
+            fputs("warning: only codex refine provider is enabled, using codex\n", stderr)
+        }
         let result = try await provider.refine(RefineRequest(text: text))
         print(result.text)
     }
@@ -490,13 +493,8 @@ struct SayItCLI {
         }
 
         let providers = [
-            runtime.primarySTTProvider.id,
-            runtime.whisperProvider.id,
-            runtime.parakeetProvider.id,
-            runtime.moonshineProvider.id,
+            runtime.fasterWhisperProvider.id,
             runtime.codexRefineProvider.id,
-            runtime.openAIRefineProvider.id,
-            runtime.openAITTSProvider.id,
             runtime.systemTTSProvider.id,
         ]
 
@@ -579,9 +577,9 @@ struct SayItCLI {
             sayit - SayIt CLI
 
             Commands:
-              sayit listen [--provider openai] [--locale zh-Hans] [--seconds 20]
+              sayit listen [--provider faster_whisper] [--locale zh-Hans] [--seconds 20]
               sayit transcribe --input <file> [--locale zh-Hans]
-              sayit refine [--provider codex|openai] < stdin
+              sayit refine [--provider codex] < stdin
               sayit export --session <uuid> --format txt|md|json [--output <path>]
               sayit models list [--json]
               sayit models inspect [--name <model-name>] [--json]

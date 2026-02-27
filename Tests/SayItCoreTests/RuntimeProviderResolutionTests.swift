@@ -11,10 +11,11 @@ final class RuntimeProviderResolutionTests: XCTestCase {
             databaseURL: tempDir.appendingPathComponent("history.sqlite")
         )
 
-        XCTAssertEqual(runtime.sttProvider(for: "openai").id, "openai")
-        XCTAssertEqual(runtime.sttProvider(for: "whisper").id, "whisper")
-        XCTAssertEqual(runtime.sttProvider(for: "parakeet").id, "parakeet")
-        XCTAssertEqual(runtime.sttProvider(for: "moonshine").id, "moonshine")
+        XCTAssertEqual(runtime.sttProvider(for: "openai").id, "faster_whisper")
+        XCTAssertEqual(runtime.sttProvider(for: "whisper").id, "faster_whisper")
+        XCTAssertEqual(runtime.sttProvider(for: "faster_whisper").id, "faster_whisper")
+        XCTAssertEqual(runtime.sttProvider(for: "parakeet").id, "faster_whisper")
+        XCTAssertEqual(runtime.sttProvider(for: "moonshine").id, "faster_whisper")
 
         XCTAssertEqual(runtime.refineProvider(for: "codex_oauth").id, "codex_oauth")
         XCTAssertEqual(runtime.refineProvider(for: "openai_api").id, "openai_api")

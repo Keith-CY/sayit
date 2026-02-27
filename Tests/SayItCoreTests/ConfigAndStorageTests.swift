@@ -11,8 +11,8 @@ final class ConfigAndStorageTests: XCTestCase {
 
         let config = try manager.load()
 
-        XCTAssertEqual(config.stt.primary, "openai")
-        XCTAssertEqual(config.stt.localDefault, "whisper")
+        XCTAssertEqual(config.stt.primary, "faster_whisper")
+        XCTAssertEqual(config.stt.localDefault, "faster_whisper")
         XCTAssertEqual(config.hotkey.keyCode, 49)
         XCTAssertEqual(config.hotkey.modifiers, 768)
         XCTAssertTrue(FileManager.default.fileExists(atPath: configURL.path))

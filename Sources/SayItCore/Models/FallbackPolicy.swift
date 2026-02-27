@@ -8,8 +8,8 @@ public struct FallbackPolicy: Codable, Sendable {
     public var circuitBreakerWindowSec: Int
 
     public init(
-        primarySTT: String = "openai",
-        localFallback: String = "whisper",
+        primarySTT: String = "faster_whisper",
+        localFallback: String = "faster_whisper",
         retryCount: Int = 1,
         circuitBreakerThreshold: Int = 3,
         circuitBreakerWindowSec: Int = 30
