@@ -25,6 +25,28 @@ public struct LocalModelDescriptor: Codable, Sendable, Identifiable {
 
 public enum ModelCatalog {
     public static func defaults() -> [LocalModelDescriptor] {
-        []
+        [
+            LocalModelDescriptor(
+                engine: .whisper,
+                name: "ggml-small.bin",
+                remoteURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin")!,
+                sha256: "",
+                sizeBytes: 487_601_967
+            ),
+            LocalModelDescriptor(
+                engine: .whisper,
+                name: "ggml-base.bin",
+                remoteURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin")!,
+                sha256: "",
+                sizeBytes: 147_951_465
+            ),
+            LocalModelDescriptor(
+                engine: .parakeet,
+                name: "parakeet-v3-int8.tar.gz",
+                remoteURL: URL(string: "https://blob.handy.computer/parakeet-v3-int8.tar.gz")!,
+                sha256: "",
+                sizeBytes: 478_517_071
+            ),
+        ]
     }
 }
