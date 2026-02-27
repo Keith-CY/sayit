@@ -46,10 +46,10 @@ public final class SayItCoreRuntime {
         let fallbackStateMachine = FallbackStateMachine(policy: config.fallbackPolicy)
 
         let fasterWhisperProvider = FasterWhisperSTTProvider()
+        let whisperProvider: STTProvider = WhisperSTTProvider()
+        let parakeetProvider: STTProvider = ParakeetSTTProvider()
+        let moonshineProvider: STTProvider = MoonshineSTTProvider()
         let primarySTTProvider: STTProvider = fasterWhisperProvider
-        let whisperProvider: STTProvider = fasterWhisperProvider
-        let parakeetProvider: STTProvider = fasterWhisperProvider
-        let moonshineProvider: STTProvider = fasterWhisperProvider
 
         let openAIRefineProvider = OpenAIRefineProvider {
             try await openAIKeyResolver.apiKey()
@@ -101,8 +101,21 @@ public final class SayItCoreRuntime {
     }
 
     public func sttProvider(for id: String) -> STTProvider {
-        _ = id
-        return fasterWhisperProvider
+        switch id {
+        case fasterWhisperProvider.id:
+            return fasterWhisperProvider
+        case whisperProvider.id:
+            return whisperProvider
+        case parakeetProvider.id:
+            return parakeetProvider
+        case moonshineProvider.id:
+            return moonshineProvider
+        case "openai":
+            // OpenAI STT is intentionally disabled; keep legacy config usable.
+            return fasterWhisperProvider
+        default:
+            return fasterWhisperProvider
+        }
     }
 
     public func refineProvider(for id: String) -> RefineProvider {

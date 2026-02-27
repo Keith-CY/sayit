@@ -38,7 +38,7 @@ struct OnboardingView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("STT is configured to use faster_whisper only. Ensure local faster_whisper runtime is available before recording.")
+            Text("STT supports faster_whisper / whisper / parakeet. If you choose faster_whisper, install local runtime and preload the small model before recording.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

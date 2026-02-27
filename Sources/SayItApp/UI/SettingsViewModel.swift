@@ -35,8 +35,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var status: String = ""
 
     let availableLocales: [String] = ["zh-Hans", "en", "ja"]
-    let availablePrimarySTT: [String] = ["faster_whisper"]
-    let availableLocalFallbacks: [String] = ["faster_whisper"]
+    let availablePrimarySTT: [String] = ["faster_whisper", "whisper", "parakeet"]
+    let availableLocalFallbacks: [String] = ["faster_whisper", "whisper", "parakeet"]
     let availableRefineProviders: [String] = ["codex_oauth", "openai_api"]
     let availableTTSProviders: [String] = ["openai_tts", "system_tts"]
 
@@ -77,8 +77,8 @@ final class SettingsViewModel: ObservableObject {
             selectedPipelineID = config.pipeline.defaultID ?? availablePipelines.first?.id
             editingPipelineID = selectedPipelineID ?? availablePipelines.first?.id
             selectedLocale = config.locale
-            selectedPrimarySTT = "faster_whisper"
-            selectedLocalFallback = "faster_whisper"
+            selectedPrimarySTT = normalizedSTTProvider(config.stt.primary, allowed: availablePrimarySTT)
+            selectedLocalFallback = normalizedSTTProvider(config.stt.localDefault, allowed: availableLocalFallbacks)
             selectedRefinePrimary = config.refine.primary
             selectedTTSPrimary = config.tts.primary
             hotkeyKeyCode = config.hotkey.keyCode
@@ -250,12 +250,16 @@ final class SettingsViewModel: ObservableObject {
 
         do {
             var config = try runtime.configManager.load()
+            let primarySTT = normalizedSTTProvider(selectedPrimarySTT, allowed: availablePrimarySTT)
+            let localFallback = normalizedSTTProvider(selectedLocalFallback, allowed: availableLocalFallbacks)
+            selectedPrimarySTT = primarySTT
+            selectedLocalFallback = localFallback
             config.pipeline.defaultID = selectedPipelineID ?? availablePipelines.first?.id
             config.locale = selectedLocale
-            config.stt.primary = "faster_whisper"
-            config.stt.localDefault = "faster_whisper"
-            config.fallbackPolicy.primarySTT = "faster_whisper"
-            config.fallbackPolicy.localFallback = "faster_whisper"
+            config.stt.primary = primarySTT
+            config.stt.localDefault = localFallback
+            config.fallbackPolicy.primarySTT = primarySTT
+            config.fallbackPolicy.localFallback = localFallback
             config.refine.primary = selectedRefinePrimary
             config.tts.primary = selectedTTSPrimary
             config.hotkey.keyCode = hotkeyKeyCode
@@ -592,6 +596,14 @@ final class SettingsViewModel: ObservableObject {
 
     private func statusMessage(_ message: String) {
         status = message
+    }
+
+    private func normalizedSTTProvider(_ value: String, allowed: [String]) -> String {
+        let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if allowed.contains(candidate) {
+            return candidate
+        }
+        return "faster_whisper"
     }
 }
 
