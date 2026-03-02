@@ -86,7 +86,10 @@ jobs:
       - name: Export app artifact
         run: |
           mkdir -p "$RUNNER_TEMP/sayit-artifacts"
-          cp -R "$RUNNER_TEMP/SayIt.xcarchive/Products/Applications/SayIt.app" "$RUNNER_TEMP/sayit-artifacts/"
+          ditto "$RUNNER_TEMP/SayIt.xcarchive/Products/Applications/SayIt.app" "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
+          xattr -cr "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
           ditto -c -k --sequesterRsrc --keepParent \
             "$RUNNER_TEMP/sayit-artifacts/SayIt.app" \
             "$RUNNER_TEMP/SayIt-macOS-${{ steps.build_vars.outputs.short_sha }}.zip"
