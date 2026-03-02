@@ -2297,8 +2297,8 @@ final class SettingsStore: ObservableObject {
     enum SpeechLanguageMode: String, CaseIterable, Identifiable, Codable {
         case auto
         case english
-        case chineseSimplified = "chineseSimplified"
-        case chineseTraditional = "chineseTraditional"
+        case chineseSimplified
+        case chineseTraditional
         case japanese
         case korean
         case french

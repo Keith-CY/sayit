@@ -63,8 +63,8 @@ final class AppleSpeechProvider: TranscriptionProvider {
             throw NSError(domain: "AppleSpeechProvider", code: 3, userInfo: [NSLocalizedDescriptionKey: "Speech recognition unavailable"])
         }
 
-        // 1. Convert [Float] samples to AVAudioPCMBuffer
-        guard let _ = self.createPCMBuffer(from: samples) else {
+        // 1. Validate [Float] samples can be converted to AVAudioPCMBuffer
+        guard self.createPCMBuffer(from: samples) != nil else {
             throw NSError(domain: "AppleSpeechProvider", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
         }
 
@@ -87,7 +87,9 @@ final class AppleSpeechProvider: TranscriptionProvider {
             return try await self.transcribeWithFallback(samples: samples, locales: candidateLocales)
         }
 
-        return try await self.transcribeWithLocale(samples: samples, locale: candidateLocales.first!)
+        let primaryLocale = candidateLocales[0]
+
+        return try await self.transcribeWithLocale(samples: samples, locale: primaryLocale)
     }
 
     private func transcribeWithFallback(samples: [Float], locales: [Locale]) async throws -> ASRTranscriptionResult {
