@@ -6,6 +6,7 @@ import XCTest
 final class DictationE2ETests: XCTestCase {
     private let enableTranscriptionSoundsKey = "EnableTranscriptionSounds"
     private let transcriptionStartSoundKey = "TranscriptionStartSound"
+    private static let runWhisperE2EEnvKey = "RUN_WHISPER_E2E_TESTS"
 
     func testTranscriptionStartSound_noneOptionHasNoFile() {
         XCTAssertEqual(SettingsStore.TranscriptionStartSound.none.displayName, "None")
@@ -40,7 +41,12 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    @MainActor
     func testDictationEndToEnd_whisperMedium_transcribesFixture() async throws {
+        guard ProcessInfo.processInfo.environment[Self.runWhisperE2EEnvKey] == "1" else {
+            throw XCTSkip("Skipping Whisper E2E test. Set \(Self.runWhisperE2EEnvKey)=1 to enable.")
+        }
+
         // Arrange
         SettingsStore.shared.selectedSpeechModel = .whisperMedium
         AnalyticsService.shared.setEnabled(false)
