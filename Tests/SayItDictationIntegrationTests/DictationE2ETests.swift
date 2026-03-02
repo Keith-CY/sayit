@@ -40,10 +40,10 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
-    func testDictationEndToEnd_whisperTiny_transcribesFixture() async throws {
+    func testDictationEndToEnd_whisperMedium_transcribesFixture() async throws {
         // Arrange
-        SettingsStore.shared.shareAnonymousAnalytics = false
-        SettingsStore.shared.selectedSpeechModel = .whisperTiny
+        SettingsStore.shared.selectedSpeechModel = .whisperMedium
+        AnalyticsService.shared.setEnabled(false)
 
         let modelDirectory = Self.modelDirectoryForRun()
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
