@@ -84,7 +84,6 @@ private actor ModelDownloadRegistry {
 ///   Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German,
 ///   Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian,
 ///   Slovak, Slovenian, Spanish, Swedish, Russian, and Ukrainian.
-/// - **Parakeet TDT v2**: Specialized for high-accuracy English transcription.
 /// - **Apple Speech**: Supports all system languages available on macOS.
 /// - **Whisper**: Supports 99 languages.
 ///

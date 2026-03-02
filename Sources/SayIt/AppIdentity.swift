@@ -15,8 +15,6 @@ enum AppIdentity {
     static let defaultDictionaryAliasesDisplay = "say it, sayit"
     static let parakeetBrandBadge = "\(displayName) Pick"
 
-    static let analyticsLibraryName = displayName
-
     static let appSupportFolder = "SayIt"
     static let legacyAppSupportFolder = "SayIt"
 

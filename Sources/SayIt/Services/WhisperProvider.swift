@@ -30,7 +30,7 @@ final class WhisperProvider: TranscriptionProvider {
     }
 
     /// Model filename to use - reads from override first, then unified SpeechModel setting
-    /// Models: tiny (~75MB), base (~142MB), small (~466MB), medium (~1.5GB), large (~2.9GB)
+    /// Supported model files: medium (~1.5GB), large (~2.9GB)
     private var modelName: String {
         let model = self.modelOverride ?? SettingsStore.shared.selectedSpeechModel
         let configured = model.whisperModelFile?
@@ -38,7 +38,7 @@ final class WhisperProvider: TranscriptionProvider {
         if let configured, !configured.isEmpty {
             return configured
         }
-        return "ggml-base.bin"
+        return "ggml-medium.bin"
     }
 
     private var modelURL: URL {
@@ -61,12 +61,6 @@ final class WhisperProvider: TranscriptionProvider {
 
     private func expectedMinimumModelBytes(for fileName: String) -> Int64? {
         switch fileName {
-        case "ggml-tiny.bin":
-            return 50 * 1024 * 1024
-        case "ggml-base.bin":
-            return 100 * 1024 * 1024
-        case "ggml-small.bin":
-            return 300 * 1024 * 1024
         case "ggml-medium.bin":
             return 1000 * 1024 * 1024
         // case "ggml-large-v3-turbo.bin": // buggy - so removed temporarily
@@ -99,7 +93,7 @@ final class WhisperProvider: TranscriptionProvider {
         // CRITICAL: Capture the target model at start to use consistently throughout this method.
         // This prevents race conditions where SettingsStore could change after await points.
         let targetModel = self.modelOverride ?? SettingsStore.shared.selectedSpeechModel
-        let currentModelName = targetModel.whisperModelFile?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ggml-base.bin"
+        let currentModelName = targetModel.whisperModelFile?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ggml-medium.bin"
 
         // Detect model change: if a different model is now selected, force reload
         if self.isReady, self.loadedModelName != currentModelName {
@@ -156,7 +150,7 @@ final class WhisperProvider: TranscriptionProvider {
             Required: \(String(format: "%.1f", requiredMemoryGB)) GB
             Available: \(String(format: "%.1f", availableMemoryGB)) GB
 
-            Please try a smaller model (e.g., Whisper Base or Small) or close other applications to free up memory.
+            Please try a lighter model or close other applications to free up memory.
             """
 
             DebugLogger.shared.error("WhisperProvider: \(errorMessage)", source: "WhisperProvider")

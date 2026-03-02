@@ -2330,13 +2330,13 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    /// Selected Whisper model size - defaults to "base"
+    /// Selected Whisper model size - defaults to "medium"
     var whisperModelSize: WhisperModelSize {
         get {
             guard let rawValue = defaults.string(forKey: Keys.whisperModelSize),
                   let size = WhisperModelSize(rawValue: rawValue)
             else {
-                return .base
+                return .medium
             }
             return size
         }
@@ -2350,9 +2350,6 @@ final class SettingsStore: ObservableObject {
 extension SettingsStore {
     /// Available Whisper model sizes
     enum WhisperModelSize: String, CaseIterable, Identifiable {
-        case tiny = "ggml-tiny.bin"
-        case base = "ggml-base.bin"
-        case small = "ggml-small.bin"
         case medium = "ggml-medium.bin"
         case large = "ggml-large-v3.bin"
 
@@ -2360,9 +2357,6 @@ extension SettingsStore {
 
         var displayName: String {
             switch self {
-            case .tiny: return "Tiny (~75 MB)"
-            case .base: return "Base (~142 MB)"
-            case .small: return "Small (~466 MB)"
             case .medium: return "Medium (~1.5 GB)"
             case .large: return "Large (~2.9 GB)"
             }
@@ -2370,9 +2364,6 @@ extension SettingsStore {
 
         var description: String {
             switch self {
-            case .tiny: return "Fastest, lower accuracy"
-            case .base: return "Good balance of speed and accuracy"
-            case .small: return "Better accuracy, slower"
             case .medium: return "High accuracy, requires more memory"
             case .large: return "Best accuracy, large download"
             }
@@ -2440,7 +2431,7 @@ extension SettingsStore {
     /// Migrates old TranscriptionProviderOption + WhisperModelSize settings to new SpeechModel
     private func migrateToSpeechModel() -> SpeechModel {
         let oldProvider = self.defaults.string(forKey: Keys.selectedTranscriptionProvider) ?? "auto"
-        let oldWhisperSize = self.defaults.string(forKey: Keys.whisperModelSize) ?? "ggml-base.bin"
+        let oldWhisperSize = self.defaults.string(forKey: Keys.whisperModelSize) ?? "ggml-medium.bin"
 
         let newModel: SpeechModel
 
@@ -2448,8 +2439,7 @@ extension SettingsStore {
         case "whisper":
             // Map old whisper size to new model
             switch oldWhisperSize {
-            case "ggml-base.bin": newModel = .whisperMedium
-            case "ggml-medium.bin": newModel = .whisperMedium
+            case "ggml-medium.bin", "ggml-base.bin", "ggml-small.bin", "ggml-tiny.bin": newModel = .whisperMedium
             case "ggml-large-v3.bin": newModel = .whisperLarge
             default: newModel = .whisperMedium
             }

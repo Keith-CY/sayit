@@ -1,8 +1,7 @@
 //
 //  FeedbackView.swift
+//  FeedbackView.swift
 //  SayIt
-//
-//  Local support module (no network requests).
 //
 
 import SwiftUI
@@ -20,9 +19,9 @@ struct FeedbackView: View {
                             .font(.system(size: 32))
                             .foregroundStyle(self.theme.palette.accent)
                         VStack(alignment: .leading) {
-                            Text("Support")
+                            Text("Support & Help")
                                 .font(.system(size: 28, weight: .bold))
-                            Text("Help improve \(AppIdentity.displayName)")
+                            Text("Local troubleshooting and how-to guidance.")
                                 .font(.system(size: 16))
                                 .foregroundStyle(.secondary)
                         }
@@ -33,22 +32,22 @@ struct FeedbackView: View {
                 ThemedCard(style: .prominent, hoverEffect: false) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 12) {
-                            Image(systemName: "info.circle.fill")
+                            Image(systemName: "questionmark.circle.fill")
                                 .font(.system(size: 28))
                                 .foregroundStyle(.blue)
 
                             VStack(alignment: .leading, spacing: 4) {
-                        Text("Feedback is local-only")
+                                Text("Local support module")
                                     .font(.system(size: 18, weight: .semibold))
                                     .foregroundStyle(self.theme.palette.primaryText)
 
-                                Text("This section is now local-only.")
+                                Text("No cloud sync and no analytics upload in this build.")
                                     .font(.system(size: 14))
                                     .foregroundStyle(self.theme.palette.secondaryText)
                             }
                         }
 
-                        Text("Feedback is saved locally only. No analytics upload is used.")
+                        Text("Use this panel as a local reference for quick troubleshooting.")
                             .font(.system(size: 13))
                             .foregroundStyle(self.theme.palette.primaryText)
                             .padding(.top, 2)
@@ -58,29 +57,25 @@ struct FeedbackView: View {
 
                 ThemedCard(style: .standard, hoverEffect: false) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("How to share feedback")
+                        Text("How to get help")
                             .font(.headline)
                             .fontWeight(.semibold)
 
-                        Text("Use the local settings/history and local logs if you want to review feedback items.")
+                        Text("Review settings, recent history, and logs in the app before restarting.")
                             .font(.system(size: 14))
                             .foregroundStyle(self.theme.palette.secondaryText)
 
-                        TextEditor(text: .constant("Feedback is intentionally kept local in this build. Please share feature notes in the local feedback notes area.")
-                        )
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Check microphone permission if recording seems unavailable.", systemImage: "mic.fill")
+                            Label("Verify Dictation settings and copy-to-clipboard toggle in Preferences.", systemImage: "slider.horizontal.3")
+                            Label("If the model fails to download, use the Voice Engine panel to retry download.", systemImage: "arrow.triangle.2.circlepath")
+                        }
                         .font(.system(size: 14))
-                        .frame(height: 130)
-                        .padding(12)
-                        .scrollContentBackground(.hidden)
-                        .disabled(true)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(self.theme.palette.contentBackground)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .strokeBorder(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1.2)
-                                )
-                        )
+                        .foregroundStyle(self.theme.palette.secondaryText)
+
+                        Text("These notes are stored locally only.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(20)
                 }

@@ -19,6 +19,7 @@ enum SidebarItem: Hashable {
     case welcome
     case voiceEngine
     case aiEnhancements
+    case support
     case preferences
     case meetingTools
     case customDictionary
@@ -806,6 +807,12 @@ struct ContentView: View {
             }
             .listRowBackground(self.sidebarRowBackground(for: .customDictionary))
 
+            NavigationLink(value: SidebarItem.support) {
+                Label("Support", systemImage: "questionmark.circle")
+                    .font(.system(size: 15, weight: .medium))
+            }
+            .listRowBackground(self.sidebarRowBackground(for: .support))
+
             NavigationLink(value: SidebarItem.stats) {
                 Label("Stats", systemImage: "chart.bar.fill")
                     .font(.system(size: 15, weight: .medium))
@@ -877,6 +884,8 @@ struct ContentView: View {
                 menuBarManager: self.menuBarManager,
                 theme: self.theme
             ))
+        case .support:
+            return AnyView(FeedbackView())
         case .preferences:
             return AnyView(self.preferencesView)
         case .meetingTools:
