@@ -128,11 +128,13 @@ final class KeychainService {
     // MARK: - Private helpers
 
     private func loadStoredKeys() throws -> [String: String] {
-        if let keys = try fetchStoredKeys(from: self.service) {
+        let keys = try fetchStoredKeys(from: self.service)
+        if !keys.isEmpty {
             return keys
         }
 
-        guard let legacyKeys = try fetchStoredKeys(from: self.legacyService) else {
+        let legacyKeys = try fetchStoredKeys(from: self.legacyService)
+        if legacyKeys.isEmpty {
             return [:]
         }
 
@@ -145,7 +147,7 @@ final class KeychainService {
         return legacyKeys
     }
 
-    private func fetchStoredKeys(from service: String) throws -> [String: String]? {
+    private func fetchStoredKeys(from service: String) throws -> [String: String] {
         var query = aggregatedQuery(for: service)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -167,7 +169,7 @@ final class KeychainService {
                 throw KeychainServiceError.invalidData
             }
         case errSecItemNotFound:
-            return nil
+            return [:]
         default:
             throw KeychainServiceError.unhandled(status)
         }

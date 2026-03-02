@@ -64,7 +64,9 @@ final class MenuBarAnimator {
                 self.apply(frames[self.idx])
             }
         }
-        RunLoop.main.add(self.timer!, forMode: .common)
+        if let timer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
     }
 
     func stop(staticImageName: String? = nil) {
