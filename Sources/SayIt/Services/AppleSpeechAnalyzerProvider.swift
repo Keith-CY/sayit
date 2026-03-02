@@ -27,28 +27,46 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     /// The required audio format for the analyzer
     private var analyzerFormat: AVAudioFormat?
 
+    private static let chineseLocalePrefixes: [String] = ["zh", "zho", "zh-hans", "zh-hant", "zh-cn", "zh-tw"]
+
     /// Thread-safe cache for model installation status.
     /// Protected by `_cacheQueue` for thread-safe access from both sync and async contexts.
     private var _modelsInstalledCache: Bool = false
     private let _cacheQueue = DispatchQueue(label: "com.sayit.speechanalyzer.cache")
+    private static let smartLanguageFallbackLocaleIdentifiers: [String] = [
+        "en-US",
+        "en-GB",
+        "en",
+        "zh-Hans",
+        "zh-Hans-CN",
+        "zh-Hans-HK",
+        "zh-Hans-TW",
+        "zh-Hant",
+        "zh-Hant-CN",
+        "zh-Hant-TW",
+        "zh",
+        "ja-JP",
+        "ko-KR",
+        "fr-FR",
+        "de-DE",
+        "es-ES",
+        "it-IT",
+        "pt-BR",
+        "ru-RU"
+    ]
 
     init() {}
 
     // MARK: - Lifecycle
 
     func prepare(progressHandler: ((Double) -> Void)?) async throws {
-        // 1. Create a transcriber to check locale support and download if needed
-        let transcriber = SpeechTranscriber(
-            locale: Locale.current,
-            transcriptionOptions: [],
-            reportingOptions: [],
-            attributeOptions: []
-        )
-
-        // 2. Check if locale is supported
+        // 1. Resolve a stable locale that is supported by SpeechAnalyzer.
+        let resolvedLocale = await self.resolveSupportedLocale()
         let supportedLocales = await SpeechTranscriber.supportedLocales
-        let currentLocaleID = Locale.current.identifier(.bcp47)
-        let isSupported = supportedLocales.map { $0.identifier(.bcp47) }.contains(currentLocaleID)
+        let currentLocaleID = Self.normalizedLocaleIdentifier(resolvedLocale)
+        let isSupported = supportedLocales
+            .map({ Self.normalizedLocaleIdentifier($0) })
+            .contains(currentLocaleID)
 
         guard isSupported else {
             throw NSError(
@@ -58,9 +76,18 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
             )
         }
 
+        // 2. Create a transcriber to check locale support and download if needed
+        let transcriber = SpeechTranscriber(
+            locale: resolvedLocale,
+            transcriptionOptions: [],
+            reportingOptions: [],
+            attributeOptions: []
+        )
+
         // 3. Check if model is installed, download if needed
         let installedLocales = await SpeechTranscriber.installedLocales
-        let isInstalled = installedLocales.map { $0.identifier(.bcp47) }.contains(currentLocaleID)
+        let installedSet = Set(installedLocales.map { Self.normalizedLocaleIdentifier($0) })
+        let isInstalled = installedSet.contains(currentLocaleID)
 
         if !isInstalled {
             DebugLogger.shared.info("Downloading speech model for locale: \(currentLocaleID)", source: "AppleSpeechAnalyzerProvider")
@@ -122,8 +149,11 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     /// - Returns: `true` if the current locale's speech model is installed on disk, `false` otherwise.
     func refreshModelsExistOnDiskAsync() async -> Bool {
         let installedLocales = await SpeechTranscriber.installedLocales
-        let currentLocaleID = Locale.current.identifier(.bcp47)
-        let isInstalled = installedLocales.map { $0.identifier(.bcp47) }.contains(currentLocaleID)
+        let currentLocaleID = Self.normalizedLocaleIdentifier(
+            await self.resolveSupportedLocale(preferDownload: false)
+        )
+        let installedSet = Set(installedLocales.map { Self.normalizedLocaleIdentifier($0) })
+        let isInstalled = installedSet.contains(currentLocaleID)
 
         self._cacheQueue.sync { self._modelsInstalledCache = isInstalled }
 
@@ -148,9 +178,79 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
 
         DebugLogger.shared.debug("AppleSpeechAnalyzer: Starting transcription with \(samples.count) samples", source: "AppleSpeechAnalyzerProvider")
 
+        // 1. Resolve locale candidates for this transcription.
+        let languageMode = SettingsStore.shared.speechLanguageMode
+        let smartDetection = SettingsStore.shared.enableSmartLanguageDetection
+        let candidateLocales = await Self.localeCandidatesAsync(
+            for: languageMode.isAutomatic ? Locale.current : nil,
+            in: languageMode,
+            includeSmartFallback: languageMode.isAutomatic && smartDetection
+        )
+
+        guard let locale = candidateLocales.first else {
+            throw NSError(
+                domain: "AppleSpeechAnalyzerProvider",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "No locale candidates available"]
+            )
+        }
+
+        if languageMode.isAutomatic, smartDetection, candidateLocales.count > 1 {
+            return try await self.transcribeWithFallback(
+                samples: samples,
+                locales: candidateLocales,
+                analyzerFormat: analyzerFormat
+            )
+        }
+
+        return try await self.transcribeWithLocale(
+            samples: samples,
+            locale: locale,
+            analyzerFormat: analyzerFormat
+        )
+    }
+
+    private func transcribeWithFallback(
+        samples: [Float],
+        locales: [Locale],
+        analyzerFormat: AVAudioFormat
+    ) async throws -> ASRTranscriptionResult {
+        var lastError: Error?
+
+        for locale in locales {
+            do {
+                let result = try await self.transcribeWithLocale(
+                    samples: samples,
+                    locale: locale,
+                    analyzerFormat: analyzerFormat
+                )
+                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    return result
+                }
+            } catch {
+                lastError = error
+                DebugLogger.shared.warning(
+                    "AppleSpeechAnalyzer: locale fallback \(locale.identifier(.bcp47)) failed - \(error.localizedDescription)",
+                    source: "AppleSpeechAnalyzerProvider"
+                )
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
+        return ASRTranscriptionResult(text: "", confidence: 0.0)
+    }
+
+    private func transcribeWithLocale(
+        samples: [Float],
+        locale: Locale,
+        analyzerFormat: AVAudioFormat
+    ) async throws -> ASRTranscriptionResult {
         // 1. Create a FRESH transcriber for this transcription
         let freshTranscriber = SpeechTranscriber(
-            locale: Locale.current,
+            locale: locale,
             transcriptionOptions: [],
             reportingOptions: [],
             attributeOptions: []
@@ -233,6 +333,14 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
         return ASRTranscriptionResult(text: finalText, confidence: 1.0)
     }
 
+    private static func localeCandidatesAsync(
+        for locale: Locale?,
+        in languageMode: SettingsStore.SpeechLanguageMode,
+        includeSmartFallback: Bool = false
+    ) async -> [Locale] {
+        return localeCandidates(for: locale, in: languageMode, includeSmartFallback: includeSmartFallback)
+    }
+
     // MARK: - Helpers
 
     /// Converts raw [Float] samples (16kHz mono) to AVAudioPCMBuffer
@@ -263,6 +371,116 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
         }
 
         return buffer
+    }
+
+    private func resolveSupportedLocale(preferDownload: Bool = true) async -> Locale {
+        let mode = SettingsStore.shared.speechLanguageMode
+        let candidateLocales: [Locale]
+        if mode.isAutomatic {
+            candidateLocales = Self.localeCandidates(for: Locale.current, in: mode)
+        } else {
+            candidateLocales = Self.localeCandidates(for: nil, in: mode)
+        }
+        let supportedLocales = await SpeechTranscriber.supportedLocales
+        let supportedSet = Set(supportedLocales.map { Self.normalizedLocaleIdentifier($0) })
+
+        for locale in candidateLocales {
+            let candidateID = Self.normalizedLocaleIdentifier(locale)
+            if supportedSet.contains(candidateID) {
+                if preferDownload {
+                    DebugLogger.shared.info(
+                        "AppleSpeechAnalyzer: Selected supported locale \(candidateID)",
+                        source: "AppleSpeechAnalyzerProvider"
+                    )
+                }
+                return locale
+            }
+        }
+
+        if let fallback = supportedLocales.first {
+            let fallbackID = Self.normalizedLocaleIdentifier(fallback)
+            DebugLogger.shared.warning(
+                "AppleSpeechAnalyzer: Falling back to default supported locale \(fallbackID)",
+                source: "AppleSpeechAnalyzerProvider"
+            )
+            return fallback
+        }
+
+        return Locale.current
+    }
+
+    private static func localeCandidates(
+        for locale: Locale?,
+        in mode: SettingsStore.SpeechLanguageMode,
+        includeSmartFallback: Bool
+    ) -> [Locale] {
+        var ids: [String] = []
+        if mode.isAutomatic {
+            if let locale {
+                ids.append(locale.identifier(.bcp47))
+                ids.append(locale.identifier)
+                ids.append(contentsOf: Locale.preferredLanguages)
+                if let languageCode = Self.languageCode(from: locale.identifier) {
+                    ids.append(languageCode)
+                }
+
+                if isChineseLocale(locale: locale.identifier) {
+                    ids.append("zh-Hans")
+                    ids.append("zh-Hans-CN")
+                    ids.append("zh-Hans-TW")
+                    ids.append("zh-Hant")
+                    ids.append("zh-Hant-CN")
+                    ids.append("zh-Hant-TW")
+                    ids.append("zh")
+                }
+            }
+            if includeSmartFallback {
+                ids.append(contentsOf: Self.smartLanguageFallbackLocaleIdentifiers)
+            }
+        } else {
+            ids = mode.localeCandidates
+        }
+
+        var orderedIDs: [String] = []
+        var seen: Set<String> = []
+        for raw in ids {
+            let normalized = Self.normalizeLocaleID(raw)
+            guard !normalized.isEmpty else { continue }
+            if !seen.contains(normalized) {
+                seen.insert(normalized)
+                orderedIDs.append(normalized)
+            }
+        }
+
+        return orderedIDs.compactMap { Locale(identifier: $0) }
+    }
+
+    private static func localeCandidates(
+        for locale: Locale?,
+        in mode: SettingsStore.SpeechLanguageMode
+    ) -> [Locale] {
+        return Self.localeCandidates(for: locale, in: mode, includeSmartFallback: false)
+    }
+
+    private static func normalizeLocaleID(_ rawID: String) -> String {
+        rawID.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+
+    private static func normalizedLocaleIdentifier(_ locale: Locale) -> String {
+        locale.identifier(.bcp47).lowercased()
+    }
+
+    private static func isChineseLocale(locale: String) -> Bool {
+        let lower = locale.lowercased()
+        return Self.chineseLocalePrefixes.contains { lower.hasPrefix($0) }
+    }
+
+    private static func languageCode(from localeIdentifier: String) -> String? {
+        let normalized = Self.normalizeLocaleID(localeIdentifier)
+        guard let first = normalized.split(separator: "-").first else {
+            return nil
+        }
+        return String(first)
     }
 }
 

@@ -149,12 +149,15 @@ final class ASRService: ObservableObject {
     /// The currently selected speech model, with locale-aware overrides for compatibility.
     private var activeSpeechModel: SettingsStore.SpeechModel {
         let selectedModel = SettingsStore.shared.selectedSpeechModel
-        if Self.isChineseLocale && !selectedModel.supportsChinese {
+        if SettingsStore.shared.speechLanguageMode.isAutomatic, Self.isChineseLocale && !selectedModel.supportsChinese {
             if selectedModel != .appleSpeech && selectedModel != .appleSpeechAnalyzer {
                 DebugLogger.shared.info(
                     "ASRService: Chinese locale detected, routing transcription from \(selectedModel.rawValue) to Apple ASR",
                     source: "ASRService"
                 )
+            }
+            if #available(macOS 26.0, *) {
+                return .appleSpeechAnalyzer
             }
             return .appleSpeech
         }

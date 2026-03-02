@@ -137,6 +137,10 @@ extension VoiceEngineSettingsView {
 
                 Divider().padding(.vertical, 4)
 
+                self.speechLanguageSection
+
+                Divider().padding(.vertical, 4)
+
                 // Filler Words Section
                 self.fillerWordsSection
             }
@@ -445,6 +449,79 @@ extension VoiceEngineSettingsView {
         }
         .opacity(self.viewModel.asr.isRunning ? 0.6 : 1.0)
         .allowsHitTesting(!self.viewModel.asr.isRunning)
+    }
+
+    var speechLanguageSection: some View {
+        let currentMode = self.settings.speechLanguageMode
+
+        return VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Speech Language")
+                    .font(.body)
+                Text("Auto uses current system language; manual lets you force a fixed recognition locale.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Menu {
+                ForEach(SettingsStore.SpeechLanguageMode.allCases) { mode in
+                    Button(mode.displayName) {
+                        self.settings.speechLanguageMode = mode
+                        self.viewModel.asr.resetTranscriptionProvider()
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Language: \(currentMode.displayName)")
+                        .font(.subheadline)
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(self.theme.palette.cardBackground.opacity(0.8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9)
+                                .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                        )
+                )
+            }
+
+            if currentMode.isAutomatic {
+                Text("Auto mode: keeps locale-based behavior and Chinese fallback when enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(self.settings.enableSmartLanguageDetection ? "Smart detection active: tries multiple locales automatically." : "Smart detection disabled: uses selected locale only.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Manual mode: forces Apple Speech locale for fixed language recognition.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle(isOn: Binding(
+                get: { self.settings.enableSmartLanguageDetection },
+                set: { newValue in
+                    self.settings.enableSmartLanguageDetection = newValue
+                    self.viewModel.asr.resetTranscriptionProvider()
+                }
+            )) {
+                HStack(spacing: 6) {
+                    Text("Smart language detection")
+                        .font(.subheadline)
+                    Text("(try multiple languages automatically when auto mode)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .disabled(!currentMode.isAutomatic)
+            .opacity(currentMode.isAutomatic ? 1.0 : 0.65)
+        }
     }
 
     var modelStatusView: some View {

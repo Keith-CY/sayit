@@ -92,6 +92,8 @@ final class SettingsStore: ObservableObject {
 
         // Unified Speech Model (replaces above two)
         static let selectedSpeechModel = "SelectedSpeechModel"
+        static let selectedSpeechLanguageMode = "SelectedSpeechLanguageMode"
+        static let enableSmartLanguageDetection = "EnableSmartLanguageDetection"
 
         // Overlay Position
         static let overlayPosition = "OverlayPosition"
@@ -2287,6 +2289,94 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // MARK: - Speech Language Mode
+
+    /// User preference for speech recognition language routing.
+    /// `.auto` keeps locale-based language selection. Manual values force the locale used
+    /// by system speech providers for users who want deterministic behavior.
+    enum SpeechLanguageMode: String, CaseIterable, Identifiable, Codable {
+        case auto
+        case english
+        case chineseSimplified = "chineseSimplified"
+        case chineseTraditional = "chineseTraditional"
+        case japanese
+        case korean
+        case french
+        case german
+        case spanish
+        case italian
+        case portuguese
+        case russian
+
+        var id: String { self.rawValue }
+
+        var isAutomatic: Bool {
+            self == .auto
+        }
+
+        var displayName: String {
+            switch self {
+            case .auto:
+                return "Auto"
+            case .english:
+                return "English (en)"
+            case .chineseSimplified:
+                return "Chinese (简体)"
+            case .chineseTraditional:
+                return "Chinese (繁體)"
+            case .japanese:
+                return "Japanese (ja)"
+            case .korean:
+                return "Korean (ko)"
+            case .french:
+                return "French (fr)"
+            case .german:
+                return "German (de)"
+            case .spanish:
+                return "Spanish (es)"
+            case .italian:
+                return "Italian (it)"
+            case .portuguese:
+                return "Portuguese (pt)"
+            case .russian:
+                return "Russian (ru)"
+            }
+        }
+
+        var localeCandidates: [String] {
+            if self == .auto {
+                return []
+            }
+
+            switch self {
+            case .english:
+                return ["en-US", "en-GB", "en"]
+            case .chineseSimplified:
+                return ["zh-Hans", "zh-Hans-CN", "zh-Hans-HK", "zh"]
+            case .chineseTraditional:
+                return ["zh-Hant", "zh-Hant-TW", "zh-Hant-HK", "zh"]
+            case .japanese:
+                return ["ja-JP", "ja"]
+            case .korean:
+                return ["ko-KR", "ko"]
+            case .french:
+                return ["fr-FR", "fr-CA", "fr"]
+            case .german:
+                return ["de-DE", "de-AT", "de-CH", "de"]
+            case .spanish:
+                return ["es-ES", "es-MX", "es"]
+            case .italian:
+                return ["it-IT", "it"]
+            case .portuguese:
+                return ["pt-BR", "pt-PT", "pt"]
+            case .russian:
+                return ["ru-RU", "ru"]
+            default:
+                return []
+            }
+        }
+    }
+
     // MARK: - Transcription Provider (ASR)
 
     /// Available transcription providers
@@ -2345,6 +2435,47 @@ final class SettingsStore: ObservableObject {
             self.defaults.set(newValue.rawValue, forKey: Keys.whisperModelSize)
         }
     }
+
+    /// Selected speech language mode for recognition.
+    /// `auto` keeps current language-aware behavior and locale fallback.
+    /// Manual modes force the provider locale selection for Apple Speech engines.
+    var speechLanguageMode: SpeechLanguageMode {
+        get {
+            guard let rawValue = self.defaults.string(forKey: Keys.selectedSpeechLanguageMode),
+                  let mode = SpeechLanguageMode(rawValue: rawValue)
+            else {
+                return .auto
+            }
+            return mode
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.selectedSpeechLanguageMode)
+            self.resetSpeechModelStateIfNeeded(for: newValue)
+        }
+    }
+
+    /// Whether automatic language detection should probe additional locales in auto mode.
+    /// On true, Apple Speech providers try a small fallback language list if the
+    /// selected locale returns no result.
+    var enableSmartLanguageDetection: Bool {
+        get {
+            guard let value = self.defaults.object(forKey: Keys.enableSmartLanguageDetection) as? Bool else {
+                return true
+            }
+            return value
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.enableSmartLanguageDetection)
+        }
+    }
+
+    private func resetSpeechModelStateIfNeeded(for _mode: SpeechLanguageMode) {
+        // Switching away from auto language detection can change model suitability for Chinese-only input,
+        // so we re-normalize the selected speech model.
+        self.selectedSpeechModel = self.selectedSpeechModel
+    }
 }
 
 extension SettingsStore {
@@ -2383,7 +2514,11 @@ extension SettingsStore {
     }
 
     private func normalizedSpeechModel(_ model: SpeechModel) -> SpeechModel {
+        guard self.speechLanguageMode.isAutomatic else { return model }
         if Self.isChineseLocale && !model.supportsChinese {
+            if #available(macOS 26.0, *) {
+                return .appleSpeechAnalyzer
+            }
             return .appleSpeech
         }
         return model

@@ -23,8 +23,7 @@ final class AppleSpeechProvider: TranscriptionProvider {
     private var recognizer: SFSpeechRecognizer?
 
     init() {
-        // Initialize with user's current locale
-        self.recognizer = SFSpeechRecognizer(locale: Locale.current)
+        // Initialized lazily when first needed to allow locale fallback discovery.
     }
 
     // MARK: - Lifecycle
@@ -65,21 +64,71 @@ final class AppleSpeechProvider: TranscriptionProvider {
         }
 
         // 1. Convert [Float] samples to AVAudioPCMBuffer
+        guard let _ = self.createPCMBuffer(from: samples) else {
+            throw NSError(domain: "AppleSpeechProvider", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
+        }
+
+        let languageMode = SettingsStore.shared.speechLanguageMode
+        let smartDetection = SettingsStore.shared.enableSmartLanguageDetection
+        let candidateLocales = Self.localeCandidates(
+            for: languageMode.isAutomatic ? Locale.current : nil,
+            in: languageMode,
+            includeSmartFallback: languageMode.isAutomatic && smartDetection
+        )
+        if candidateLocales.isEmpty {
+            throw NSError(
+                domain: "AppleSpeechProvider",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "No speech locale candidates found"]
+            )
+        }
+
+        if languageMode.isAutomatic, smartDetection, candidateLocales.count > 1 {
+            return try await self.transcribeWithFallback(samples: samples, locales: candidateLocales)
+        }
+
+        return try await self.transcribeWithLocale(samples: samples, locale: candidateLocales.first!)
+    }
+
+    private func transcribeWithFallback(samples: [Float], locales: [Locale]) async throws -> ASRTranscriptionResult {
+        var lastError: Error?
+
+        for locale in locales {
+            do {
+                let result = try await self.transcribeWithLocale(samples: samples, locale: locale)
+                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    return result
+                }
+            } catch {
+                lastError = error
+                DebugLogger.shared.warning(
+                    "AppleSpeechProvider: locale fallback \(locale.identifier(.bcp47)) failed - \(error.localizedDescription)",
+                    source: "AppleSpeechProvider"
+                )
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
+        return ASRTranscriptionResult(text: "", confidence: 0.0)
+    }
+
+    private func transcribeWithLocale(samples: [Float], locale: Locale) async throws -> ASRTranscriptionResult {
         guard let buffer = self.createPCMBuffer(from: samples) else {
             throw NSError(domain: "AppleSpeechProvider", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
         }
 
-        // 2. Ensure recognizer exists
-        if self.recognizer == nil {
-            self.recognizer = SFSpeechRecognizer(locale: Locale.current)
-        }
-        guard let recognizer = self.recognizer else {
-            throw NSError(domain: "AppleSpeechProvider", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to initialize SFSpeechRecognizer"])
+        guard let recognizer = Self.resolveRecognizer(for: locale), recognizer.isAvailable else {
+            throw NSError(
+                domain: "AppleSpeechProvider",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "SFSpeechRecognizer is unavailable for locale \(locale.identifier(.bcp47))"]
+            )
         }
 
-        if !recognizer.isAvailable {
-            throw NSError(domain: "AppleSpeechProvider", code: 6, userInfo: [NSLocalizedDescriptionKey: "SFSpeechRecognizer is currently unavailable"])
-        }
+        self.recognizer = recognizer
 
         // 3. Create Request
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -142,6 +191,100 @@ final class AppleSpeechProvider: TranscriptionProvider {
         }
 
         return buffer
+    }
+
+    private static let smartLanguageFallbackLocaleIdentifiers: [String] = [
+        "en-US",
+        "en-GB",
+        "en",
+        "zh-Hans",
+        "zh-Hans-CN",
+        "zh-Hant",
+        "zh-Hant-CN",
+        "zh-Hant-TW",
+        "zh",
+        "ja-JP",
+        "ko-KR",
+        "fr-FR",
+        "de-DE",
+        "es-ES",
+        "it-IT",
+        "pt-BR",
+        "ru-RU"
+    ]
+
+    private static func resolveRecognizer(for locale: Locale) -> SFSpeechRecognizer? {
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+            return nil
+        }
+        DebugLogger.shared.info("AppleSpeechProvider: Using locale \(locale.identifier(.bcp47))", source: "AppleSpeechProvider")
+        return recognizer
+    }
+
+    private static func localeCandidates(
+        for locale: Locale?,
+        in languageMode: SettingsStore.SpeechLanguageMode,
+        includeSmartFallback: Bool
+    ) -> [Locale] {
+        var ids: [String] = []
+        if languageMode.isAutomatic {
+            if let locale {
+                ids.append(locale.identifier(.bcp47))
+                ids.append(locale.identifier)
+                ids.append(contentsOf: Locale.preferredLanguages)
+
+                if let languageCode = languageCode(from: locale.identifier) {
+                    ids.append(languageCode)
+                }
+                if isChineseLocale(locale: locale.identifier) {
+                    ids.append("zh-Hans")
+                    ids.append("zh-Hans-CN")
+                    ids.append("zh-Hant")
+                    ids.append("zh-Hant-TW")
+                    ids.append("zh")
+                }
+            }
+            if includeSmartFallback {
+                ids.append(contentsOf: smartLanguageFallbackLocaleIdentifiers)
+            }
+        } else {
+            ids = languageMode.localeCandidates
+        }
+
+        var orderedIDs: [String] = []
+        var seen: Set<String> = []
+        for raw in ids {
+            let normalized = normalizeLocaleID(raw)
+            guard !normalized.isEmpty else { continue }
+            if !seen.contains(normalized) {
+                seen.insert(normalized)
+                orderedIDs.append(normalized)
+            }
+        }
+
+        return orderedIDs.compactMap { Locale(identifier: $0) }
+    }
+
+    private static func localeCandidates(for locale: Locale?, in languageMode: SettingsStore.SpeechLanguageMode) -> [Locale] {
+        Self.localeCandidates(for: locale, in: languageMode, includeSmartFallback: false)
+    }
+
+    private static func normalizeLocaleID(_ rawID: String) -> String {
+        rawID.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+
+    private static func languageCode(from localeIdentifier: String) -> String? {
+        let normalized = normalizeLocaleID(localeIdentifier)
+        guard let first = normalized.split(separator: "-").first else {
+            return nil
+        }
+        return String(first)
+    }
+
+    private static func isChineseLocale(locale: String) -> Bool {
+        let lower = locale.lowercased()
+        let chinesePrefixes = ["zh", "zho", "zh-hans", "zh-hant", "zh-cn", "zh-tw"]
+        return chinesePrefixes.contains { lower.hasPrefix($0) }
     }
 
     /// Structured concurrency wrapper for authorization
