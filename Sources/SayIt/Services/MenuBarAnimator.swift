@@ -139,20 +139,25 @@ final class MenuBarAnimator {
     }
 
     static func loadImage(named name: String) -> NSImage? {
-        let imageNames = [Bundle.main.path(forResource: name, ofType: "png"),
-                          Bundle.main.path(forResource: name, ofType: "pdf"),
-                          Bundle.main.path(forResource: name, ofType: nil)]
-        let moduleNames = [Bundle.module.path(forResource: name, ofType: "png"),
-                           Bundle.module.path(forResource: name, ofType: "pdf"),
-                           Bundle.module.path(forResource: name, ofType: nil)]
+        if let image = NSImage(named: name) {
+            image.isTemplate = true
+            return image
+        }
 
-        for path in imageNames + moduleNames where path != nil {
-            if let path = path, let image = NSImage(contentsOfFile: path) {
+        let imageNames = [
+            (Bundle.main, "png"),
+            (Bundle.main, "pdf"),
+            (Bundle.main, nil),
+        ]
+
+        for (bundle, ext) in imageNames {
+            if let path = bundle.path(forResource: name, ofType: ext),
+               let image = NSImage(contentsOfFile: path) {
                 image.isTemplate = true
                 return image
             }
         }
 
-        return NSImage(named: name)
+        return nil
     }
 }

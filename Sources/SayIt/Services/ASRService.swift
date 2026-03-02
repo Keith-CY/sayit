@@ -2114,11 +2114,19 @@ final class ASRService: ObservableObject {
 
     private func parakeetCacheDirectory(for model: SettingsStore.SpeechModel) -> URL? {
         #if arch(arm64)
-        let baseCacheDir = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
+        guard let baseCacheDir = Self.fluidAudioModelsDirectory() else {
+            return nil
+        }
         return baseCacheDir.appendingPathComponent("parakeet-tdt-0.6b-v3-coreml")
         #else
         return nil
         #endif
+    }
+
+    private static func fluidAudioModelsDirectory() -> URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("FluidAudio", isDirectory: true)
+            .appendingPathComponent("Models", isDirectory: true)
     }
 
     private func estimatedParakeetSizeBytes(for model: SettingsStore.SpeechModel) -> Int64 {

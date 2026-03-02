@@ -4,6 +4,9 @@ import Combine
 import Foundation
 import ServiceManagement
 import SwiftUI
+#if canImport(FluidAudio)
+import FluidAudio
+#endif
 
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
@@ -99,6 +102,7 @@ final class SettingsStore: ObservableObject {
 
         // Media Playback Control
         static let pauseMediaDuringTranscription = "PauseMediaDuringTranscription"
+        static let vocabularyBoostingEnabled = "VocabularyBoostingEnabled"
 
         // Custom Dictation Prompt
         static let customDictationPrompt = "CustomDictationPrompt"
@@ -1098,6 +1102,18 @@ final class SettingsStore: ObservableObject {
 
     var accentColor: Color {
         Color(hex: self.accentColorOption.hex) ?? Color(red: 0.227, green: 0.784, blue: 0.776)
+    }
+
+    /// Keep vocabulary boosting enabled by default for improved custom term recognition.
+    var vocabularyBoostingEnabled: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.vocabularyBoostingEnabled)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.vocabularyBoostingEnabled)
+        }
     }
 
     var enableTranscriptionSounds: Bool {
@@ -2203,14 +2219,7 @@ final class SettingsStore: ObservableObject {
                 // Hardcoded path check for NVIDIA v3
                 return Self.parakeetCacheDirectory(version: "parakeet-tdt-0.6b-v3-coreml")
             case .qwen3Asr:
-                #if canImport(FluidAudio) && ENABLE_QWEN
-                if #available(macOS 15.0, *) {
-                    return Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory())
-                }
                 return false
-                #else
-                return false
-                #endif
             default:
                 // Whisper models
                 guard let whisperFile = self.whisperModelFile else { return false }
@@ -2223,7 +2232,7 @@ final class SettingsStore: ObservableObject {
 
         private static func parakeetCacheDirectory(version: String) -> Bool {
             #if canImport(FluidAudio)
-            let baseCacheDir = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
+            guard let baseCacheDir = Self.fluidAudioModelsDirectory() else { return false }
             let modelDir = baseCacheDir.appendingPathComponent(version)
             return FileManager.default.fileExists(atPath: modelDir.path)
             #else
@@ -2232,6 +2241,14 @@ final class SettingsStore: ObservableObject {
             return baseCacheDir.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
             #endif
         }
+
+        #if canImport(FluidAudio)
+        private static func fluidAudioModelsDirectory() -> URL? {
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("FluidAudio", isDirectory: true)
+                .appendingPathComponent("Models", isDirectory: true)
+        }
+        #endif
 
         /// Brand/provider name for the model (NVIDIA, Apple, OpenAI)
         var brandName: String {
