@@ -1,0 +1,2456 @@
+import AppKit
+import ApplicationServices
+import Combine
+import Foundation
+import ServiceManagement
+import SwiftUI
+
+final class SettingsStore: ObservableObject {
+    static let shared = SettingsStore()
+    static let transcriptionPreviewCharLimitRange: ClosedRange<Int> = 50...800
+    static let transcriptionPreviewCharLimitStep = 50
+    static let defaultTranscriptionPreviewCharLimit = 150
+    private let defaults = UserDefaults.standard
+    private let keychain = KeychainService.shared
+
+    private init() {
+        self.migrateTranscriptionStartSoundIfNeeded()
+        self.migrateProviderAPIKeysIfNeeded()
+        self.scrubSavedProviderAPIKeys()
+        self.migrateDictationPromptProfilesIfNeeded()
+        self.normalizePromptSelectionsIfNeeded()
+        self.migrateOverlayBottomOffsetTo50IfNeeded()
+    }
+
+    // Keys
+    private enum Keys {
+        static let enableAIProcessing = "EnableAIProcessing"
+        static let availableAIModels = "AvailableAIModels"
+        static let availableModelsByProvider = "AvailableModelsByProvider"
+        static let selectedAIModel = "SelectedAIModel"
+        static let selectedModelByProvider = "SelectedModelByProvider"
+        static let selectedProviderID = "SelectedProviderID"
+        static let providerAPIKeys = "ProviderAPIKeys"
+        static let providerAPIKeyIdentifiers = "ProviderAPIKeyIdentifiers"
+        static let savedProviders = "SavedProviders"
+        static let verifiedProviderFingerprints = "VerifiedProviderFingerprints"
+        static let hotkeyShortcutKey = "HotkeyShortcutKey"
+        static let preferredInputDeviceUID = "PreferredInputDeviceUID"
+        static let preferredOutputDeviceUID = "PreferredOutputDeviceUID"
+        static let syncAudioDevicesWithSystem = "SyncAudioDevicesWithSystem"
+        static let visualizerNoiseThreshold = "VisualizerNoiseThreshold"
+        static let launchAtStartup = "LaunchAtStartup"
+        static let showInDock = "ShowInDock"
+        static let accentColorOption = "AccentColorOption"
+        static let enableTranscriptionSounds = "EnableTranscriptionSounds"
+        static let transcriptionStartSound = "TranscriptionStartSound"
+        static let pressAndHoldMode = "PressAndHoldMode"
+        static let enableStreamingPreview = "EnableStreamingPreview"
+        static let enableAIStreaming = "EnableAIStreaming"
+        static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
+        static let playgroundUsed = "PlaygroundUsed"
+
+        // Command Mode Keys
+        static let commandModeSelectedModel = "CommandModeSelectedModel"
+        static let commandModeSelectedProviderID = "CommandModeSelectedProviderID"
+        static let commandModeHotkeyShortcut = "CommandModeHotkeyShortcut"
+        static let commandModeConfirmBeforeExecute = "CommandModeConfirmBeforeExecute"
+        static let commandModeLinkedToGlobal = "CommandModeLinkedToGlobal"
+        static let commandModeShortcutEnabled = "CommandModeShortcutEnabled"
+
+        // Rewrite Mode Keys
+        static let rewriteModeHotkeyShortcut = "RewriteModeHotkeyShortcut"
+        static let rewriteModeSelectedModel = "RewriteModeSelectedModel"
+        static let rewriteModeSelectedProviderID = "RewriteModeSelectedProviderID"
+        static let rewriteModeLinkedToGlobal = "RewriteModeLinkedToGlobal"
+
+        // Model Reasoning Config Keys
+        static let modelReasoningConfigs = "ModelReasoningConfigs"
+        static let rewriteModeShortcutEnabled = "RewriteModeShortcutEnabled"
+        static let showThinkingTokens = "ShowThinkingTokens"
+
+        // Stats Keys
+        static let userTypingWPM = "UserTypingWPM"
+        static let saveTranscriptionHistory = "SaveTranscriptionHistory"
+
+        // Filler Words
+        static let fillerWords = "FillerWords"
+        static let removeFillerWordsEnabled = "RemoveFillerWordsEnabled"
+
+        // GAAV Mode (removes capitalization and trailing punctuation)
+        static let gaavModeEnabled = "GAAVModeEnabled"
+
+        // Custom Dictionary
+        static let customDictionaryEntries = "CustomDictionaryEntries"
+
+        // Transcription Provider (ASR)
+        static let selectedTranscriptionProvider = "SelectedTranscriptionProvider"
+        static let whisperModelSize = "WhisperModelSize"
+
+        // Unified Speech Model (replaces above two)
+        static let selectedSpeechModel = "SelectedSpeechModel"
+
+        // Overlay Position
+        static let overlayPosition = "OverlayPosition"
+        static let overlayBottomOffset = "OverlayBottomOffset"
+        static let overlayBottomOffsetMigratedTo50 = "OverlayBottomOffsetMigratedTo50"
+        static let overlaySize = "OverlaySize"
+        static let transcriptionPreviewCharLimit = "TranscriptionPreviewCharLimit"
+
+        // Media Playback Control
+        static let pauseMediaDuringTranscription = "PauseMediaDuringTranscription"
+
+        // Custom Dictation Prompt
+        static let customDictationPrompt = "CustomDictationPrompt"
+
+        // Dictation Prompt Profiles (multi-prompt system)
+        static let dictationPromptProfiles = "DictationPromptProfiles"
+        static let selectedDictationPromptID = "SelectedDictationPromptID"
+        static let selectedEditPromptID = "SelectedEditPromptID"
+        static let selectedWritePromptID = "SelectedWritePromptID" // legacy fallback key
+        static let selectedRewritePromptID = "SelectedRewritePromptID" // legacy fallback key
+
+        // Default Dictation Prompt Override (optional)
+        // nil   => use built-in default prompt
+        // ""    => use empty system prompt
+        // other => use custom default prompt text
+        static let defaultDictationPromptOverride = "DefaultDictationPromptOverride"
+        static let defaultEditPromptOverride = "DefaultEditPromptOverride"
+        static let defaultWritePromptOverride = "DefaultWritePromptOverride" // legacy fallback key
+        static let defaultRewritePromptOverride = "DefaultRewritePromptOverride" // legacy fallback key
+
+        // Streak Settings
+        static let weekendsDontBreakStreak = "WeekendsDontBreakStreak"
+    }
+
+    // MARK: - Prompt Profiles (Unified)
+
+    enum PromptMode: String, Codable, CaseIterable, Identifiable {
+        case dictate
+        case edit
+        case write // legacy persisted value (decoded as .edit)
+        case rewrite // legacy persisted value (decoded as .edit)
+
+        var id: String { self.rawValue }
+
+        static var visiblePromptModes: [PromptMode] { [.dictate, .edit] }
+
+        var normalized: PromptMode {
+            switch self {
+            case .dictate:
+                return .dictate
+            case .edit, .write, .rewrite:
+                return .edit
+            }
+        }
+
+        var displayName: String {
+            switch self.normalized {
+            case .dictate:
+                return "Dictate"
+            case .edit:
+                return "Edit"
+            case .write, .rewrite:
+                return "Edit"
+            }
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let raw = (try? container.decode(String.self).lowercased()) ?? Self.dictate.rawValue
+            switch raw {
+            case "dictate":
+                self = .dictate
+            case "edit", "write", "rewrite":
+                self = .edit
+            default:
+                self = .dictate
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(self.normalized.rawValue)
+        }
+    }
+
+    struct DictationPromptProfile: Codable, Identifiable, Hashable {
+        let id: String
+        var name: String
+        var prompt: String
+        var mode: PromptMode
+        var includeContext: Bool
+        var createdAt: Date
+        var updatedAt: Date
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case name
+            case prompt
+            case mode
+            case includeContext
+            case createdAt
+            case updatedAt
+        }
+
+        init(
+            id: String = UUID().uuidString,
+            name: String,
+            prompt: String,
+            mode: PromptMode = .dictate,
+            includeContext: Bool = false,
+            createdAt: Date = Date(),
+            updatedAt: Date = Date()
+        ) {
+            self.id = id
+            self.name = name
+            self.prompt = prompt
+            self.mode = mode
+            self.includeContext = includeContext
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.name = try container.decode(String.self, forKey: .name)
+            self.prompt = try container.decode(String.self, forKey: .prompt)
+            self.mode = try (container.decodeIfPresent(PromptMode.self, forKey: .mode) ?? .dictate).normalized
+            self.includeContext = try container.decodeIfPresent(Bool.self, forKey: .includeContext) ?? false
+            self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+            self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        }
+    }
+
+    /// User-defined dictation prompt profiles (named system prompts for dictation cleanup).
+    /// The built-in default prompt is not stored here.
+    var dictationPromptProfiles: [DictationPromptProfile] {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.dictationPromptProfiles),
+                  let decoded = try? JSONDecoder().decode([DictationPromptProfile].self, from: data)
+            else {
+                return []
+            }
+            return decoded
+        }
+        set {
+            objectWillChange.send()
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(encoded, forKey: Keys.dictationPromptProfiles)
+            } else {
+                // If encoding fails, avoid writing corrupt data.
+                self.defaults.removeObject(forKey: Keys.dictationPromptProfiles)
+            }
+        }
+    }
+
+    /// Selected dictation prompt profile ID. `nil` means "Default".
+    var selectedDictationPromptID: String? {
+        get {
+            let value = self.defaults.string(forKey: Keys.selectedDictationPromptID)
+            return value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true ? nil : value
+        }
+        set {
+            objectWillChange.send()
+            if let id = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+                self.defaults.set(id, forKey: Keys.selectedDictationPromptID)
+            } else {
+                self.defaults.removeObject(forKey: Keys.selectedDictationPromptID)
+            }
+        }
+    }
+
+    /// Convenience: currently selected profile, or nil if Default/invalid selection.
+    var selectedDictationPromptProfile: DictationPromptProfile? {
+        self.selectedPromptProfile(for: .dictate)
+    }
+
+    /// Selected edit prompt profile ID. `nil` means "Default Edit".
+    var selectedEditPromptID: String? {
+        get {
+            if let value = self.defaults.string(forKey: Keys.selectedEditPromptID),
+               value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            {
+                return value
+            }
+            if let legacyRewrite = self.defaults.string(forKey: Keys.selectedRewritePromptID),
+               legacyRewrite.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            {
+                return legacyRewrite
+            }
+            if let legacyWrite = self.defaults.string(forKey: Keys.selectedWritePromptID),
+               legacyWrite.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            {
+                return legacyWrite
+            }
+            return nil
+        }
+        set {
+            objectWillChange.send()
+            if let id = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+                self.defaults.set(id, forKey: Keys.selectedEditPromptID)
+            } else {
+                self.defaults.removeObject(forKey: Keys.selectedEditPromptID)
+            }
+            // Normalize to the new key only.
+            self.defaults.removeObject(forKey: Keys.selectedWritePromptID)
+            self.defaults.removeObject(forKey: Keys.selectedRewritePromptID)
+        }
+    }
+
+    /// Legacy alias retained for compatibility.
+    var selectedWritePromptID: String? {
+        get { self.selectedEditPromptID }
+        set { self.selectedEditPromptID = newValue }
+    }
+
+    /// Legacy alias retained for compatibility.
+    var selectedRewritePromptID: String? {
+        get { self.selectedEditPromptID }
+        set { self.selectedEditPromptID = newValue }
+    }
+
+    func selectedPromptID(for mode: PromptMode) -> String? {
+        switch mode.normalized {
+        case .dictate:
+            return self.selectedDictationPromptID
+        case .edit:
+            return self.selectedEditPromptID
+        case .write, .rewrite:
+            return self.selectedEditPromptID
+        }
+    }
+
+    func setSelectedPromptID(_ id: String?, for mode: PromptMode) {
+        switch mode.normalized {
+        case .dictate:
+            self.selectedDictationPromptID = id
+        case .edit:
+            self.selectedEditPromptID = id
+        case .write, .rewrite:
+            self.selectedEditPromptID = id
+        }
+    }
+
+    func promptProfiles(for mode: PromptMode) -> [DictationPromptProfile] {
+        let target = mode.normalized
+        return self.dictationPromptProfiles.filter { $0.mode.normalized == target }
+    }
+
+    func selectedPromptProfile(for mode: PromptMode) -> DictationPromptProfile? {
+        guard let id = self.selectedPromptID(for: mode) else { return nil }
+        let target = mode.normalized
+        return self.dictationPromptProfiles.first(where: { $0.id == id && $0.mode.normalized == target })
+    }
+
+    /// Optional override for the built-in default dictation system prompt.
+    /// - nil: use the built-in default prompt
+    /// - empty string: use an empty system prompt
+    /// - otherwise: use the provided text as the default prompt
+    var defaultDictationPromptOverride: String? {
+        get {
+            // Distinguish "not set" from "set to empty string"
+            guard self.defaults.object(forKey: Keys.defaultDictationPromptOverride) != nil else {
+                return nil
+            }
+            return self.defaults.string(forKey: Keys.defaultDictationPromptOverride) ?? ""
+        }
+        set {
+            objectWillChange.send()
+            if let value = newValue {
+                self.defaults.set(value, forKey: Keys.defaultDictationPromptOverride) // allow empty
+            } else {
+                self.defaults.removeObject(forKey: Keys.defaultDictationPromptOverride)
+            }
+        }
+    }
+
+    /// Optional override for the built-in default edit system prompt.
+    var defaultEditPromptOverride: String? {
+        get {
+            if self.defaults.object(forKey: Keys.defaultEditPromptOverride) != nil {
+                return self.defaults.string(forKey: Keys.defaultEditPromptOverride) ?? ""
+            }
+            if self.defaults.object(forKey: Keys.defaultRewritePromptOverride) != nil {
+                return self.defaults.string(forKey: Keys.defaultRewritePromptOverride) ?? ""
+            }
+            if self.defaults.object(forKey: Keys.defaultWritePromptOverride) != nil {
+                return self.defaults.string(forKey: Keys.defaultWritePromptOverride) ?? ""
+            }
+            return nil
+        }
+        set {
+            objectWillChange.send()
+            if let value = newValue {
+                self.defaults.set(value, forKey: Keys.defaultEditPromptOverride)
+            } else {
+                self.defaults.removeObject(forKey: Keys.defaultEditPromptOverride)
+            }
+            // Normalize to the new key only.
+            self.defaults.removeObject(forKey: Keys.defaultWritePromptOverride)
+            self.defaults.removeObject(forKey: Keys.defaultRewritePromptOverride)
+        }
+    }
+
+    /// Legacy alias retained for compatibility.
+    var defaultWritePromptOverride: String? {
+        get { self.defaultEditPromptOverride }
+        set { self.defaultEditPromptOverride = newValue }
+    }
+
+    /// Legacy alias retained for compatibility.
+    var defaultRewritePromptOverride: String? {
+        get { self.defaultEditPromptOverride }
+        set { self.defaultEditPromptOverride = newValue }
+    }
+
+    func defaultPromptOverride(for mode: PromptMode) -> String? {
+        switch mode.normalized {
+        case .dictate:
+            return self.defaultDictationPromptOverride
+        case .edit:
+            return self.defaultEditPromptOverride
+        case .write, .rewrite:
+            return self.defaultEditPromptOverride
+        }
+    }
+
+    func setDefaultPromptOverride(_ value: String?, for mode: PromptMode) {
+        switch mode.normalized {
+        case .dictate:
+            self.defaultDictationPromptOverride = value
+        case .edit:
+            self.defaultEditPromptOverride = value
+        case .write, .rewrite:
+            self.defaultEditPromptOverride = value
+        }
+    }
+
+    /// Hidden base prompt: role/intent only (not exposed in UI).
+    static func baseDictationPromptText() -> String {
+        """
+        You are a voice-to-text dictation cleaner. Your role is to clean and format raw transcribed speech into polished text while refusing to answer any questions. Never answer questions about yourself or anything else.
+
+        ## Core Rules:
+        1. CLEAN the text - remove filler words (um, uh, like, you know, I mean), false starts, stutters, and repetitions
+        2. FORMAT properly - add correct punctuation, capitalization, and structure
+        3. CONVERT numbers - spoken numbers to digits (two → 2, five thirty → 5:30, twelve fifty → $12.50)
+        4. EXECUTE commands - handle "new line", "period", "comma", "bold X", "header X", "bullet point", etc.
+        5. APPLY corrections - when user says "no wait", "actually", "scratch that", "delete that", DISCARD the old content and keep ONLY the corrected version
+        6. PRESERVE intent - keep the user's meaning, just clean the delivery
+        7. EXPAND abbreviations - thx → thanks, pls → please, u → you, ur → your/you're, gonna → going to
+
+        ## Critical:
+        - Output ONLY the cleaned text
+        - Do NOT answer questions - just clean them
+        - DO NOT EVER ANSWER TO QUESTIONS
+        - Do NOT add explanations or commentary
+        - Do NOT wrap in quotes unless the input had quotes
+        - Do NOT add filler words (um, uh) to the output
+        - PRESERVE ordinals in lists: "first call client, second review contract" → keep "First" and "Second"
+        - PRESERVE politeness words: "please", "thank you" at end of sentences
+        """
+    }
+
+    /// Hidden base prompt for edit mode (role/intent only).
+    static func baseEditPromptText() -> String {
+        """
+        You are a helpful writing assistant. The user may ask you to write new text or edit selected text.
+
+        Output ONLY what the user requested. Do not add explanations or preamble.
+        """
+    }
+
+    /// Legacy wrappers retained for compatibility.
+    static func baseWritePromptText() -> String {
+        self.baseEditPromptText()
+    }
+
+    /// Legacy wrappers retained for compatibility.
+    static func baseRewritePromptText() -> String {
+        self.baseEditPromptText()
+    }
+
+    static func basePromptText(for mode: PromptMode) -> String {
+        switch mode.normalized {
+        case .dictate:
+            return self.baseDictationPromptText()
+        case .edit:
+            return self.baseEditPromptText()
+        case .write, .rewrite:
+            return self.baseEditPromptText()
+        }
+    }
+
+    /// Built-in default dictation prompt body that users may view/edit.
+    static func defaultDictationPromptBodyText() -> String {
+        """
+        ## Self-Corrections:
+        When user corrects themselves, DISCARD everything before the correction trigger:
+        - Triggers: "no", "wait", "actually", "scratch that", "delete that", "no no", "cancel", "never mind", "sorry", "oops"
+        - Example: "buy milk no wait buy water" → "Buy water." (NOT "Buy milk. Buy water.")
+        - Example: "tell John no actually tell Sarah" → "Tell Sarah."
+        - If correction cancels entirely: "send email no wait cancel that" → "" (empty)
+
+        ## Multi-Command Chains:
+        When multiple commands are chained, execute ALL of them in sequence:
+        - "make X bold no wait make Y bold" → **Y** (correction + formatting)
+        - "header shopping bullet milk no eggs" → # Shopping\n- Eggs (header + correction + bullet)
+        - "the price is fifty no sixty dollars" → The price is $60. (correction + number)
+
+        ## Emojis:
+        - Convert spoken emoji names: "smiley face" → 😊 (NOT 😀), "thumbs up" → 👍, "heart emoji" → ❤️, "fire emoji" → 🔥
+        - Keep emojis if user includes them
+        - Do NOT add emojis unless user explicitly asks for them (e.g., "joke about cats" → NO 😺)
+        """
+    }
+
+    /// Built-in default edit prompt body.
+    static func defaultEditPromptBodyText() -> String {
+        """
+        Your job:
+        - If the user asks for new content, write it directly.
+        - If selected context is provided, apply the instruction to that context.
+        - Preserve intent and requested tone/style/format.
+        - Output only the final text, without explanations.
+
+        Example requests:
+        - "Write an email to my boss asking for time off"
+        - "Draft a reply saying I'll be there at 5"
+        - "Rewrite this to sound more professional"
+        - "Make this shorter and clearer"
+        """
+    }
+
+    /// Legacy wrappers retained for compatibility.
+    static func defaultWritePromptBodyText() -> String {
+        self.defaultEditPromptBodyText()
+    }
+
+    /// Legacy wrappers retained for compatibility.
+    static func defaultRewritePromptBodyText() -> String {
+        self.defaultEditPromptBodyText()
+    }
+
+    static func defaultPromptBodyText(for mode: PromptMode) -> String {
+        switch mode.normalized {
+        case .dictate:
+            return self.defaultDictationPromptBodyText()
+        case .edit:
+            return self.defaultEditPromptBodyText()
+        case .write, .rewrite:
+            return self.defaultEditPromptBodyText()
+        }
+    }
+
+    /// Join hidden base with a body, avoiding duplicate base text.
+    static func combineBasePrompt(with body: String) -> String {
+        self.combineBasePrompt(for: .dictate, with: body)
+    }
+
+    /// Join hidden base with a body for a given mode, avoiding duplicate base text.
+    static func combineBasePrompt(for mode: PromptMode, with body: String) -> String {
+        let base = self.basePromptText(for: mode).trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // If body already starts with base, return as-is to avoid double-prepending.
+        if trimmedBody.lowercased().hasPrefix(base.lowercased()) {
+            return trimmedBody
+        }
+
+        // If body is empty, return just the base.
+        guard !trimmedBody.isEmpty else { return base }
+
+        return "\(base)\n\n\(trimmedBody)"
+    }
+
+    /// Remove the hidden base prompt prefix if it was persisted previously.
+    static func stripBaseDictationPrompt(from text: String) -> String {
+        self.stripBasePrompt(for: .dictate, from: text)
+    }
+
+    /// Remove a hidden base prompt prefix for a given mode if it was persisted previously.
+    static func stripBasePrompt(for mode: PromptMode, from text: String) -> String {
+        let base = self.basePromptText(for: mode).trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Try exact and case-insensitive prefix removal
+        if trimmed.hasPrefix(base) {
+            let bodyStart = trimmed.index(trimmed.startIndex, offsetBy: base.count)
+            return trimmed[bodyStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let range = trimmed.lowercased().range(of: base.lowercased()), range.lowerBound == trimmed.lowercased().startIndex {
+            let idx = trimmed.index(trimmed.startIndex, offsetBy: base.count)
+            return trimmed[idx...].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return trimmed
+    }
+
+    /// Built-in default dictation system prompt shared across the app.
+    static func defaultDictationPromptText() -> String {
+        self.defaultSystemPromptText(for: .dictate)
+    }
+
+    static func defaultSystemPromptText(for mode: PromptMode) -> String {
+        self.combineBasePrompt(for: mode, with: self.defaultPromptBodyText(for: mode))
+    }
+
+    static func contextTemplateText() -> String {
+        """
+        Use the following selected context to improve your response:
+        {context}
+        """
+    }
+
+    static func runtimeContextBlock(context: String, template: String) -> String {
+        let trimmedContext = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContext.isEmpty else { return "" }
+        if template.contains("{context}") {
+            return template.replacingOccurrences(of: "{context}", with: trimmedContext)
+        }
+        return "\(template)\n\(trimmedContext)"
+    }
+
+    func effectivePromptBody(for mode: PromptMode) -> String {
+        if let profile = self.selectedPromptProfile(for: mode) {
+            let body = Self.stripBasePrompt(for: mode, from: profile.prompt)
+            if !body.isEmpty {
+                return body
+            }
+        }
+
+        if let override = self.defaultPromptOverride(for: mode) {
+            return Self.stripBasePrompt(for: mode, from: override)
+        }
+
+        return Self.defaultPromptBodyText(for: mode)
+    }
+
+    func effectiveSystemPrompt(for mode: PromptMode) -> String {
+        if let profile = self.selectedPromptProfile(for: mode) {
+            let body = Self.stripBasePrompt(for: mode, from: profile.prompt)
+            if !body.isEmpty {
+                return Self.combineBasePrompt(for: mode, with: body)
+            }
+        }
+
+        if let override = self.defaultPromptOverride(for: mode) {
+            let trimmedOverride = override.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedOverride.isEmpty else { return override }
+            let body = Self.stripBasePrompt(for: mode, from: trimmedOverride)
+            return Self.combineBasePrompt(for: mode, with: body)
+        }
+
+        return Self.defaultSystemPromptText(for: mode)
+    }
+
+    // MARK: - Model Reasoning Configuration
+
+    /// Configuration for model-specific reasoning/thinking parameters
+    struct ModelReasoningConfig: Codable, Equatable {
+        /// The parameter name to use (e.g., "reasoning_effort", "enable_thinking", "thinking")
+        var parameterName: String
+
+        /// The value to use for the parameter (e.g., "low", "medium", "high", "none", "true")
+        var parameterValue: String
+
+        /// Whether this config is enabled (allows disabling without deleting)
+        var isEnabled: Bool
+
+        init(parameterName: String = "reasoning_effort", parameterValue: String = "low", isEnabled: Bool = true) {
+            self.parameterName = parameterName
+            self.parameterValue = parameterValue
+            self.isEnabled = isEnabled
+        }
+
+        /// Common presets for different model types
+        static let openAIGPT5 = ModelReasoningConfig(
+            parameterName: "reasoning_effort",
+            parameterValue: "low",
+            isEnabled: true
+        )
+        static let openAIO1 = ModelReasoningConfig(
+            parameterName: "reasoning_effort",
+            parameterValue: "medium",
+            isEnabled: true
+        )
+        static let groqGPTOSS = ModelReasoningConfig(
+            parameterName: "reasoning_effort",
+            parameterValue: "low",
+            isEnabled: true
+        )
+        static let deepSeekReasoner = ModelReasoningConfig(
+            parameterName: "enable_thinking",
+            parameterValue: "true",
+            isEnabled: true
+        )
+        static let disabled = ModelReasoningConfig(parameterName: "", parameterValue: "", isEnabled: false)
+    }
+
+    struct SavedProvider: Codable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let baseURL: String
+        let apiKey: String
+        let models: [String]
+
+        init(id: String = UUID().uuidString, name: String, baseURL: String, apiKey: String = "", models: [String] = []) {
+            self.id = id
+            self.name = name
+            self.baseURL = baseURL
+            self.apiKey = apiKey
+            self.models = models
+        }
+    }
+
+    var enableAIProcessing: Bool {
+        get { self.defaults.bool(forKey: Keys.enableAIProcessing) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.enableAIProcessing)
+        }
+    }
+
+    var availableModels: [String] {
+        get { (self.defaults.array(forKey: Keys.availableAIModels) as? [String]) ?? [] }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.availableAIModels)
+        }
+    }
+
+    var availableModelsByProvider: [String: [String]] {
+        get { (self.defaults.dictionary(forKey: Keys.availableModelsByProvider) as? [String: [String]]) ?? [:] }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.availableModelsByProvider)
+        }
+    }
+
+    var selectedModel: String? {
+        get { self.defaults.string(forKey: Keys.selectedAIModel) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.selectedAIModel)
+        }
+    }
+
+    var selectedModelByProvider: [String: String] {
+        get { (self.defaults.dictionary(forKey: Keys.selectedModelByProvider) as? [String: String]) ?? [:] }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.selectedModelByProvider)
+        }
+    }
+
+    var providerAPIKeys: [String: String] {
+        get { (try? self.keychain.fetchAllKeys()) ?? [:] }
+        set {
+            objectWillChange.send()
+            self.persistProviderAPIKeys(newValue)
+        }
+    }
+
+    /// Securely retrieve API key for a provider, handling custom prefix logic
+    func getAPIKey(for providerID: String) -> String? {
+        let keys = self.providerAPIKeys
+        // Try exact match first
+        if let key = keys[providerID] { return key }
+
+        // Try canonical key format (custom:ID)
+        let canonical = self.canonicalProviderKey(for: providerID)
+        return keys[canonical]
+    }
+
+    var selectedProviderID: String {
+        get { self.defaults.string(forKey: Keys.selectedProviderID) ?? "openai" }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.selectedProviderID)
+        }
+    }
+
+    var savedProviders: [SavedProvider] {
+        get {
+            guard let data = defaults.data(forKey: Keys.savedProviders),
+                  let decoded = try? JSONDecoder().decode([SavedProvider].self, from: data) else { return [] }
+            return decoded
+        }
+        set {
+            objectWillChange.send()
+            let sanitized = newValue.map { provider -> SavedProvider in
+                if provider.apiKey.isEmpty { return provider }
+                return SavedProvider(
+                    id: provider.id,
+                    name: provider.name,
+                    baseURL: provider.baseURL,
+                    apiKey: "",
+                    models: provider.models
+                )
+            }
+            if let encoded = try? JSONEncoder().encode(sanitized) {
+                self.defaults.set(encoded, forKey: Keys.savedProviders)
+            }
+        }
+    }
+
+    /// Check if the current AI provider is fully configured (API key/baseURL + selected model)
+    var isAIConfigured: Bool {
+        let providerID = self.selectedProviderID
+
+        // 1. Apple Intelligence is always considered configured
+        if providerID == "apple-intelligence" { return true }
+
+        // 2. Get base URL to check for local endpoints
+        var baseURL = ""
+        if let saved = self.savedProviders.first(where: { $0.id == providerID }) {
+            baseURL = saved.baseURL
+        } else {
+            baseURL = ModelRepository.shared.defaultBaseURL(for: providerID)
+        }
+
+        let isLocal = ModelRepository.shared.isLocalEndpoint(baseURL)
+
+        // 3. Check for API key and selected model
+        let key = self.canonicalProviderKey(for: providerID)
+        let hasApiKey = !(self.providerAPIKeys[key]?.isEmpty ?? true)
+
+        let selectedModel = self.selectedModelByProvider[key]
+        let hasSelectedModel = !(selectedModel?.isEmpty ?? true)
+        let hasDefaultModel = !ModelRepository.shared.defaultModels(for: providerID).isEmpty
+        let hasModel = hasSelectedModel || hasDefaultModel
+
+        return (isLocal || hasApiKey) && hasModel
+    }
+
+    /// The base URL for the currently selected AI provider
+    var activeBaseURL: String {
+        let providerID = self.selectedProviderID
+        if let saved = self.savedProviders.first(where: { $0.id == providerID }) {
+            return saved.baseURL
+        }
+        return ModelRepository.shared.defaultBaseURL(for: providerID)
+    }
+
+    var hotkeyShortcut: HotkeyShortcut {
+        get {
+            if let data = defaults.data(forKey: Keys.hotkeyShortcutKey),
+               let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data)
+            {
+                return shortcut
+            }
+            return HotkeyShortcut(keyCode: 61, modifierFlags: [])
+        }
+        set {
+            objectWillChange.send()
+            if let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.hotkeyShortcutKey)
+            }
+        }
+    }
+
+    var pressAndHoldMode: Bool {
+        get { self.defaults.bool(forKey: Keys.pressAndHoldMode) }
+        set { self.defaults.set(newValue, forKey: Keys.pressAndHoldMode) }
+    }
+
+    var enableStreamingPreview: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.enableStreamingPreview)
+            return value as? Bool ?? true // Default to true (enabled)
+        }
+        set { self.defaults.set(newValue, forKey: Keys.enableStreamingPreview) }
+    }
+
+    var enableAIStreaming: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.enableAIStreaming)
+            return value as? Bool ?? true // Default to true (enabled)
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.enableAIStreaming)
+        }
+    }
+
+    var copyTranscriptionToClipboard: Bool {
+        get { self.defaults.bool(forKey: Keys.copyTranscriptionToClipboard) }
+        set { self.defaults.set(newValue, forKey: Keys.copyTranscriptionToClipboard) }
+    }
+
+    var preferredInputDeviceUID: String? {
+        get { self.defaults.string(forKey: Keys.preferredInputDeviceUID) }
+        set { self.defaults.set(newValue, forKey: Keys.preferredInputDeviceUID) }
+    }
+
+    var preferredOutputDeviceUID: String? {
+        get { self.defaults.string(forKey: Keys.preferredOutputDeviceUID) }
+        set { self.defaults.set(newValue, forKey: Keys.preferredOutputDeviceUID) }
+    }
+
+    /// When enabled, changing audio devices in SayIt will also update macOS system audio settings.
+    /// ALWAYS TRUE: Independent mode removed due to CoreAudio aggregate device limitations (OSStatus -10851)
+    var syncAudioDevicesWithSystem: Bool {
+        get {
+            // Always return true - independent mode doesn't work for Bluetooth/aggregate devices
+            return true
+        }
+        set {
+            // No-op: sync mode is always enabled
+            // Kept for backward compatibility but value is ignored
+            _ = newValue
+        }
+    }
+
+    var visualizerNoiseThreshold: Double {
+        get {
+            let value = self.defaults.double(forKey: Keys.visualizerNoiseThreshold)
+            return value == 0.0 ? 0.4 : value // Default to 0.4 if not set
+        }
+        set {
+            // Clamp between 0.0 and 0.95 to avoid division by zero issues in visualizers
+            let clamped = max(min(newValue, 0.95), 0.0)
+            self.defaults.set(clamped, forKey: Keys.visualizerNoiseThreshold)
+        }
+    }
+
+    // MARK: - Overlay Position
+
+    /// Size options for the recording overlay
+    enum OverlaySize: String, CaseIterable {
+        case small
+        case medium
+        case large
+
+        var displayName: String {
+            switch self {
+            case .small: return "Small"
+            case .medium: return "Medium"
+            case .large: return "Large"
+            }
+        }
+    }
+
+    /// Position options for the recording overlay
+    enum OverlayPosition: String, CaseIterable {
+        case top // Top of screen (notch area or floating)
+        case bottom // Bottom of screen
+
+        var displayName: String {
+            switch self {
+            case .top: return "Top of Screen"
+            case .bottom: return "Bottom of Screen"
+            }
+        }
+    }
+
+    /// Where the recording overlay appears (default: bottom)
+    var overlayPosition: OverlayPosition {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.overlayPosition),
+                  let position = OverlayPosition(rawValue: raw)
+            else {
+                return .bottom // Default to bottom (menu overlay)
+            }
+            return position
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.overlayPosition)
+        }
+    }
+
+    /// Vertical offset for the bottom overlay (distance from bottom of screen/dock)
+    var overlayBottomOffset: Double {
+        get {
+            let value = self.defaults.double(forKey: Keys.overlayBottomOffset)
+            return value == 0.0 ? 50.0 : value // Default to 50.0
+        }
+        set {
+            objectWillChange.send()
+            // Clamp between a safe range (20px to 1000px)
+            // Even though slider is 20-500, we clamp for safety
+            let clamped = max(min(newValue, 1000.0), 10.0)
+            self.defaults.set(clamped, forKey: Keys.overlayBottomOffset)
+
+            // Post notification for live update if overlay is visible
+            NotificationCenter.default.post(name: NSNotification.Name("OverlayOffsetChanged"), object: nil)
+        }
+    }
+
+    /// The size of the recording overlay (default: medium)
+    var overlaySize: OverlaySize {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.overlaySize),
+                  let size = OverlaySize(rawValue: raw)
+            else {
+                return .medium // Default to medium
+            }
+            return size
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.overlaySize)
+
+            // Post notification for live update if overlay is visible
+            NotificationCenter.default.post(name: NSNotification.Name("OverlaySizeChanged"), object: nil)
+        }
+    }
+
+    /// How many recent transcription characters show in overlays (default: 150)
+    var transcriptionPreviewCharLimit: Int {
+        get {
+            let stored = self.defaults.object(forKey: Keys.transcriptionPreviewCharLimit) as? NSNumber
+            let value = stored?.intValue ?? Self.defaultTranscriptionPreviewCharLimit
+            return Self.normalizedTranscriptionPreviewCharLimit(value)
+        }
+        set {
+            let clamped = Self.normalizedTranscriptionPreviewCharLimit(newValue)
+            guard clamped != self.transcriptionPreviewCharLimit else { return }
+
+            objectWillChange.send()
+            self.defaults.set(clamped, forKey: Keys.transcriptionPreviewCharLimit)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("TranscriptionPreviewCharLimitChanged"),
+                object: nil
+            )
+        }
+    }
+
+    private static func normalizedTranscriptionPreviewCharLimit(_ value: Int) -> Int {
+        let range = Self.transcriptionPreviewCharLimitRange
+        let clamped = max(range.lowerBound, min(range.upperBound, value))
+        let offset = clamped - range.lowerBound
+        let snappedOffset = Int((Double(offset) / Double(Self.transcriptionPreviewCharLimitStep)).rounded())
+            * Self.transcriptionPreviewCharLimitStep
+        return max(range.lowerBound, min(range.upperBound, range.lowerBound + snappedOffset))
+    }
+
+    // MARK: - Preferences Settings
+
+    enum AccentColorOption: String, CaseIterable, Identifiable {
+        case cyan = "Cyan"
+        case green = "Green"
+        case blue = "Blue"
+        case purple = "Purple"
+        case orange = "Orange"
+
+        var id: String { self.rawValue }
+
+        var hex: String {
+            switch self {
+            case .cyan: return "#3AC8C6"
+            case .green: return "#22C55E"
+            case .blue: return "#3B82F6"
+            case .purple: return "#A855F7"
+            case .orange: return "#F59E0B"
+            }
+        }
+    }
+
+    enum TranscriptionStartSound: String, CaseIterable, Identifiable {
+        case none = "none"
+        case startupSfx1 = "fluid_sfx_1"
+        case startupSfx2 = "fluid_sfx_2"
+        case startupSfx3 = "fluid_sfx_3"
+        case startupSfx4 = "fluid_sfx_4"
+
+        var id: String { self.rawValue }
+
+        var displayName: String {
+            switch self {
+            case .none: return "None"
+            case .startupSfx1: return "Startup Sound 1"
+            case .startupSfx2: return "Startup Sound 2"
+            case .startupSfx3: return "Startup Sound 3"
+            case .startupSfx4: return "Startup Sound 4"
+            }
+        }
+
+        var soundFileName: String? {
+            switch self {
+            case .none: return nil
+            case .startupSfx1: return "FV_start"
+            case .startupSfx2: return "FV_start_2"
+            case .startupSfx3: return "sfx_3"
+            case .startupSfx4: return "sfx_4"
+            }
+        }
+    }
+
+    var accentColorOption: AccentColorOption {
+        get {
+            guard let raw = self.defaults.string(forKey: Keys.accentColorOption),
+                  let option = AccentColorOption(rawValue: raw)
+            else {
+                return .cyan
+            }
+            return option
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.accentColorOption)
+        }
+    }
+
+    var accentColor: Color {
+        Color(hex: self.accentColorOption.hex) ?? Color(red: 0.227, green: 0.784, blue: 0.776)
+    }
+
+    var enableTranscriptionSounds: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.enableTranscriptionSounds)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.enableTranscriptionSounds)
+        }
+    }
+
+    var transcriptionStartSound: TranscriptionStartSound {
+        get {
+            self.migrateTranscriptionStartSoundIfNeeded()
+            guard let raw = self.defaults.string(forKey: Keys.transcriptionStartSound),
+                  let option = TranscriptionStartSound(rawValue: raw)
+            else {
+                return .startupSfx4
+            }
+            return option
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.transcriptionStartSound)
+        }
+    }
+
+    var launchAtStartup: Bool {
+        get { self.defaults.bool(forKey: Keys.launchAtStartup) }
+        set {
+            self.defaults.set(newValue, forKey: Keys.launchAtStartup)
+            // Update launch agent registration
+            self.updateLaunchAtStartup(newValue)
+        }
+    }
+
+    // MARK: - Initialization Methods
+
+    func initializeAppSettings() {
+        #if os(macOS)
+        // Apply dock visibility setting on app launch
+        let dockVisible = self.showInDock
+        DebugLogger.shared.info("Initializing app with dock visibility: \(dockVisible)", source: "SettingsStore")
+
+        // Set activation policy based on saved preference
+        DispatchQueue.main.async {
+            NSApp.setActivationPolicy(dockVisible ? .regular : .accessory)
+        }
+        #endif
+    }
+
+    var showInDock: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.showInDock)
+            return value as? Bool ?? true // Default to true if not set
+        }
+        set {
+            self.defaults.set(newValue, forKey: Keys.showInDock)
+            // Update dock visibility
+            self.updateDockVisibility(newValue)
+        }
+    }
+
+    /// Issue #162 wording: hide app from Dock and Cmd+Tab when enabled.
+    /// Backed by existing `showInDock` storage to keep this change minimal.
+    var hideFromDockAndAppSwitcher: Bool {
+        get { !self.showInDock }
+        set { self.showInDock = !newValue }
+    }
+
+    var playgroundUsed: Bool {
+        get { self.defaults.bool(forKey: Keys.playgroundUsed) }
+        set { self.defaults.set(newValue, forKey: Keys.playgroundUsed) }
+    }
+
+    // MARK: - Command Mode Settings
+
+    var commandModeSelectedModel: String? {
+        get { self.defaults.string(forKey: Keys.commandModeSelectedModel) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.commandModeSelectedModel)
+        }
+    }
+
+    var commandModeSelectedProviderID: String {
+        get { self.defaults.string(forKey: Keys.commandModeSelectedProviderID) ?? "openai" }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.commandModeSelectedProviderID)
+        }
+    }
+
+    var commandModeLinkedToGlobal: Bool {
+        get { self.defaults.bool(forKey: Keys.commandModeLinkedToGlobal) } // Default to false (let user opt-in, or true if preferred)
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.commandModeLinkedToGlobal)
+        }
+    }
+
+    var commandModeShortcutEnabled: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.commandModeShortcutEnabled)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.commandModeShortcutEnabled)
+        }
+    }
+
+    var commandModeHotkeyShortcut: HotkeyShortcut {
+        get {
+            if let data = defaults.data(forKey: Keys.commandModeHotkeyShortcut),
+               let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data)
+            {
+                return shortcut
+            }
+            // Default to Right Command key (keyCode: 54, no modifiers for the key itself)
+            return HotkeyShortcut(keyCode: 54, modifierFlags: [])
+        }
+        set {
+            objectWillChange.send()
+            if let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.commandModeHotkeyShortcut)
+            }
+        }
+    }
+
+    var commandModeConfirmBeforeExecute: Bool {
+        get {
+            // Default to true (safer - ask before running commands)
+            let value = self.defaults.object(forKey: Keys.commandModeConfirmBeforeExecute)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.commandModeConfirmBeforeExecute)
+        }
+    }
+
+    // MARK: - Rewrite Mode Settings
+
+    var rewriteModeHotkeyShortcut: HotkeyShortcut {
+        get {
+            if let data = defaults.data(forKey: Keys.rewriteModeHotkeyShortcut),
+               let shortcut = try? JSONDecoder().decode(HotkeyShortcut.self, from: data)
+            {
+                return shortcut
+            }
+            // Default to Option+R (keyCode: 15 is R, with Option modifier)
+            return HotkeyShortcut(keyCode: 15, modifierFlags: [.option])
+        }
+        set {
+            objectWillChange.send()
+            if let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.rewriteModeHotkeyShortcut)
+            }
+        }
+    }
+
+    var rewriteModeSelectedModel: String? {
+        get { self.defaults.string(forKey: Keys.rewriteModeSelectedModel) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.rewriteModeSelectedModel)
+        }
+    }
+
+    var rewriteModeSelectedProviderID: String {
+        get { self.defaults.string(forKey: Keys.rewriteModeSelectedProviderID) ?? "openai" }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.rewriteModeSelectedProviderID)
+        }
+    }
+
+    var rewriteModeLinkedToGlobal: Bool {
+        get {
+            // Default to true - sync with global settings by default
+            let value = self.defaults.object(forKey: Keys.rewriteModeLinkedToGlobal)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.rewriteModeLinkedToGlobal)
+        }
+    }
+
+    // MARK: - Model Reasoning Configuration
+
+    /// Per-model reasoning configuration storage
+    /// Key format: "provider:model" (e.g., "openai:gpt-5.1", "groq:gpt-oss-120b")
+    var modelReasoningConfigs: [String: ModelReasoningConfig] {
+        get {
+            guard let data = defaults.data(forKey: Keys.modelReasoningConfigs),
+                  let decoded = try? JSONDecoder().decode([String: ModelReasoningConfig].self, from: data)
+            else {
+                return [:]
+            }
+            return decoded
+        }
+        set {
+            objectWillChange.send()
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(encoded, forKey: Keys.modelReasoningConfigs)
+            }
+        }
+    }
+
+    /// Get reasoning config for a specific model, with smart defaults for known models
+    func getReasoningConfig(forModel model: String, provider: String) -> ModelReasoningConfig? {
+        let key = "\(provider):\(model)"
+
+        // First check if user has a custom config
+        if let customConfig = modelReasoningConfigs[key] {
+            return customConfig.isEnabled ? customConfig : nil
+        }
+
+        // Apply smart defaults for known model patterns
+        let modelLower = model.lowercased()
+
+        // OpenAI gpt-5.x models
+        if modelLower.hasPrefix("gpt-5") || modelLower.contains("gpt-5.") {
+            return .openAIGPT5
+        }
+
+        // OpenAI o1/o3 reasoning models
+        if modelLower.hasPrefix("o1") || modelLower.hasPrefix("o3") {
+            return .openAIO1
+        }
+
+        // Groq gpt-oss models
+        if modelLower.contains("gpt-oss") || modelLower.hasPrefix("openai/") {
+            return .groqGPTOSS
+        }
+
+        // DeepSeek reasoner models
+        if modelLower.contains("deepseek"), modelLower.contains("reasoner") {
+            return .deepSeekReasoner
+        }
+
+        // No reasoning config needed for standard models (gpt-4.x, claude, llama, etc.)
+        return nil
+    }
+
+    /// Set reasoning config for a specific model
+    func setReasoningConfig(_ config: ModelReasoningConfig?, forModel model: String, provider: String) {
+        let key = "\(provider):\(model)"
+        var configs = self.modelReasoningConfigs
+
+        if let config = config {
+            configs[key] = config
+        } else {
+            configs.removeValue(forKey: key)
+        }
+
+        self.modelReasoningConfigs = configs
+    }
+
+    /// Check if a model has a custom (user-defined) reasoning config
+    func hasCustomReasoningConfig(forModel model: String, provider: String) -> Bool {
+        let key = "\(provider):\(model)"
+        return self.modelReasoningConfigs[key] != nil
+    }
+
+    var rewriteModeShortcutEnabled: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.rewriteModeShortcutEnabled)
+            return value as? Bool ?? true
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.rewriteModeShortcutEnabled)
+        }
+    }
+
+    /// Global check if a model is a reasoning model (requires special params/max_completion_tokens)
+    func isReasoningModel(_ model: String) -> Bool {
+        let modelLower = model.lowercased()
+        return modelLower.hasPrefix("gpt-5") ||
+            modelLower.contains("gpt-5.") ||
+            modelLower.hasPrefix("o1") ||
+            modelLower.hasPrefix("o3") ||
+            modelLower.contains("gpt-oss") ||
+            modelLower.hasPrefix("openai/") ||
+            (modelLower.contains("deepseek") && modelLower.contains("reasoner"))
+    }
+
+    /// Whether to display thinking tokens in the UI (Command Mode, Rewrite Mode)
+    /// If false, thinking tokens are extracted but not shown to user
+    var showThinkingTokens: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.showThinkingTokens)
+            return value as? Bool ?? true // Default to true (show thinking)
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.showThinkingTokens)
+        }
+    }
+
+    /// Stored verification fingerprints per provider key (hash of baseURL + apiKey).
+    var verifiedProviderFingerprints: [String: String] {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.verifiedProviderFingerprints),
+                  let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+            else {
+                return [:]
+            }
+            return decoded
+        }
+        set {
+            objectWillChange.send()
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(encoded, forKey: Keys.verifiedProviderFingerprints)
+            } else {
+                self.defaults.removeObject(forKey: Keys.verifiedProviderFingerprints)
+            }
+        }
+    }
+
+    // MARK: - Stats Settings
+
+    /// User's typing speed in words per minute (for time saved calculation)
+    var userTypingWPM: Int {
+        get {
+            let value = self.defaults.integer(forKey: Keys.userTypingWPM)
+            return value > 0 ? value : 40 // Default to 40 WPM
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(max(1, min(200, newValue)), forKey: Keys.userTypingWPM) // Clamp 1-200
+        }
+    }
+
+    /// When enabled, weekends (Saturday/Sunday) don't break the usage streak
+    var weekendsDontBreakStreak: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.weekendsDontBreakStreak)
+            return value as? Bool ?? true // Default to true (weekends don't break streak)
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.weekendsDontBreakStreak)
+        }
+    }
+
+    // MARK: - Custom Dictation Prompt
+
+    /// Custom system prompt for dictation mode. When empty, uses the default built-in prompt.
+    var customDictationPrompt: String {
+        get { self.defaults.string(forKey: Keys.customDictationPrompt) ?? "" }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.customDictationPrompt)
+        }
+    }
+
+    /// Whether to save transcription history for stats tracking
+    /// When disabled, transcriptions are not stored and stats won't update
+    var saveTranscriptionHistory: Bool {
+        get {
+            let value = self.defaults.object(forKey: Keys.saveTranscriptionHistory)
+            return value as? Bool ?? true // Default to true (save history)
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.saveTranscriptionHistory)
+        }
+    }
+
+    // MARK: - Private Methods
+
+    private func persistProviderAPIKeys(_ values: [String: String]) {
+        let trimmed = self.sanitizeAPIKeys(values)
+        do {
+            try self.keychain.storeAllKeys(trimmed)
+        } catch {
+            DebugLogger.shared.error(
+                "Failed to persist provider API keys: \(error.localizedDescription)",
+                source: "SettingsStore"
+            )
+        }
+    }
+
+    private func migrateTranscriptionStartSoundIfNeeded() {
+        guard let legacyEnabled = self.defaults.object(forKey: Keys.enableTranscriptionSounds) as? Bool else { return }
+        if legacyEnabled == false {
+            self.defaults.set(TranscriptionStartSound.none.rawValue, forKey: Keys.transcriptionStartSound)
+        }
+        self.defaults.removeObject(forKey: Keys.enableTranscriptionSounds)
+    }
+
+    private func migrateProviderAPIKeysIfNeeded() {
+        self.defaults.removeObject(forKey: Keys.providerAPIKeyIdentifiers)
+
+        var merged = (try? self.keychain.fetchAllKeys()) ?? [:]
+        var didMutate = false
+
+        if let legacyDefaults = defaults.dictionary(forKey: Keys.providerAPIKeys) as? [String: String],
+           legacyDefaults.isEmpty == false
+        {
+            merged.merge(self.sanitizeAPIKeys(legacyDefaults)) { _, new in new }
+            didMutate = true
+        }
+        self.defaults.removeObject(forKey: Keys.providerAPIKeys)
+
+        if let legacyKeychain = try? keychain.legacyProviderEntries(),
+           legacyKeychain.isEmpty == false
+        {
+            merged.merge(self.sanitizeAPIKeys(legacyKeychain)) { _, new in new }
+            didMutate = true
+            try? self.keychain.removeLegacyEntries(providerIDs: Array(legacyKeychain.keys))
+        }
+
+        if didMutate {
+            self.persistProviderAPIKeys(merged)
+        }
+    }
+
+    private func migrateDictationPromptProfilesIfNeeded() {
+        // Migration path from legacy single prompt to multi-prompt profiles.
+        // If user had a legacy custom dictation prompt, convert it to a profile and select it.
+        let legacyPrompt = self.customDictationPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !legacyPrompt.isEmpty else { return }
+
+        // If profiles already exist, just clear the legacy prompt so we don't keep two sources of truth.
+        if self.dictationPromptProfiles.isEmpty == false {
+            self.customDictationPrompt = ""
+            // If selection points to nowhere, reset to default to avoid confusion.
+            if let id = self.selectedDictationPromptID,
+               self.dictationPromptProfiles.contains(where: { $0.id == id && $0.mode == .dictate }) == false
+            {
+                self.selectedDictationPromptID = nil
+            }
+            return
+        }
+
+        let profile = DictationPromptProfile(
+            name: "My Custom Prompt",
+            prompt: legacyPrompt,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        self.dictationPromptProfiles = [profile]
+        self.selectedDictationPromptID = profile.id
+        self.customDictationPrompt = ""
+        DebugLogger.shared.info("Migrated legacy custom dictation prompt to a prompt profile", source: "SettingsStore")
+    }
+
+    private func normalizePromptSelectionsIfNeeded() {
+        // One-time migration to unified edit keys.
+        if self.defaults.object(forKey: Keys.selectedEditPromptID) == nil,
+           let migratedSelectedEditID = self.selectedEditPromptID
+        {
+            self.defaults.set(migratedSelectedEditID, forKey: Keys.selectedEditPromptID)
+            self.defaults.removeObject(forKey: Keys.selectedWritePromptID)
+            self.defaults.removeObject(forKey: Keys.selectedRewritePromptID)
+        }
+
+        if self.defaults.object(forKey: Keys.defaultEditPromptOverride) == nil,
+           let migratedEditOverride = self.defaultEditPromptOverride
+        {
+            self.defaults.set(migratedEditOverride, forKey: Keys.defaultEditPromptOverride)
+            self.defaults.removeObject(forKey: Keys.defaultWritePromptOverride)
+            self.defaults.removeObject(forKey: Keys.defaultRewritePromptOverride)
+        }
+
+        // Persist profile mode normalization to the new user-facing modes.
+        var normalizedProfiles = self.dictationPromptProfiles
+        var didChangeProfiles = false
+        for idx in normalizedProfiles.indices {
+            let normalizedMode = normalizedProfiles[idx].mode.normalized
+            if normalizedProfiles[idx].mode != normalizedMode {
+                normalizedProfiles[idx].mode = normalizedMode
+                didChangeProfiles = true
+            }
+        }
+        if didChangeProfiles {
+            self.dictationPromptProfiles = normalizedProfiles
+        }
+
+        if let id = self.selectedDictationPromptID,
+           self.dictationPromptProfiles.contains(where: { $0.id == id && $0.mode == .dictate }) == false
+        {
+            self.selectedDictationPromptID = nil
+        }
+
+        if let id = self.selectedEditPromptID,
+           self.dictationPromptProfiles.contains(where: { $0.id == id && $0.mode.normalized == .edit }) == false
+        {
+            self.selectedEditPromptID = nil
+        }
+    }
+
+    private func migrateOverlayBottomOffsetTo50IfNeeded() {
+        if self.defaults.bool(forKey: Keys.overlayBottomOffsetMigratedTo50) {
+            return
+        }
+
+        self.defaults.set(50.0, forKey: Keys.overlayBottomOffset)
+        self.defaults.set(true, forKey: Keys.overlayBottomOffsetMigratedTo50)
+        NotificationCenter.default.post(name: NSNotification.Name("OverlayOffsetChanged"), object: nil)
+    }
+
+    private func scrubSavedProviderAPIKeys() {
+        guard let data = defaults.data(forKey: Keys.savedProviders),
+              var decoded = try? JSONDecoder().decode([SavedProvider].self, from: data) else { return }
+
+        var didModify = false
+        for index in decoded.indices {
+            let provider = decoded[index]
+            let trimmed = provider.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.isEmpty == false else { continue }
+
+            let keyID = self.canonicalProviderKey(for: provider.id)
+            do {
+                try self.keychain.storeKey(trimmed, for: keyID)
+                didModify = true
+            } catch {
+                DebugLogger.shared
+                    .error(
+                        "Failed to migrate API key for \(provider.name): \(error.localizedDescription)",
+                        source: "SettingsStore"
+                    )
+            }
+
+            decoded[index] = SavedProvider(
+                id: provider.id,
+                name: provider.name,
+                baseURL: provider.baseURL,
+                apiKey: "",
+                models: provider.models
+            )
+        }
+
+        if didModify,
+           let encoded = try? JSONEncoder().encode(decoded)
+        {
+            self.defaults.set(encoded, forKey: Keys.savedProviders)
+        }
+
+        // No need to track migrated IDs; consolidated storage keeps them together.
+    }
+
+    private func canonicalProviderKey(for providerID: String) -> String {
+        // Built-in providers use their ID directly
+        if ModelRepository.shared.isBuiltIn(providerID) {
+            return providerID
+        }
+        if providerID.hasPrefix("custom:") {
+            return providerID
+        }
+        return "custom:\(providerID)"
+    }
+
+    private func sanitizeAPIKeys(_ values: [String: String]) -> [String: String] {
+        values.reduce(into: [String: String]()) { partialResult, pair in
+            let sanitizedValue = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard sanitizedValue.isEmpty == false else { return }
+            partialResult[pair.key] = sanitizedValue
+        }
+    }
+
+    private func updateLaunchAtStartup(_ enabled: Bool) {
+        #if os(macOS)
+        // Note: SMAppService.mainApp requires the app to be signed with Developer ID
+        // and have proper entitlements. This may not work in development builds.
+        let service = SMAppService.mainApp
+
+        do {
+            if enabled {
+                try service.register()
+                DebugLogger.shared.info("Successfully registered for launch at startup", source: "SettingsStore")
+            } else {
+                try service.unregister()
+                DebugLogger.shared.info("Successfully unregistered from launch at startup", source: "SettingsStore")
+            }
+        } catch {
+            DebugLogger.shared.error("Failed to update launch at startup: \(error)", source: "SettingsStore")
+            // In development, this is expected to fail without proper signing/entitlements
+            // The setting is still saved and will work when the app is properly signed
+        }
+        #endif
+    }
+
+    private func updateDockVisibility(_ visible: Bool) {
+        #if os(macOS)
+        // IMPORTANT: This is a simplified implementation for development
+        // In production, consider these approaches:
+        // 1. Use LSUIElement in Info.plist to control default dock visibility
+        // 2. Implement a proper helper app or service for dock management
+        // 3. Use NSApplication.shared.setActivationPolicy() for better control
+
+        // For now, we'll try multiple approaches with fallbacks
+
+        DebugLogger.shared.debug(
+            "Attempting to update dock visibility to: \(visible ? "visible" : "hidden")",
+            source: "SettingsStore"
+        )
+
+        // Method 1: Try the deprecated TransformProcessType (may not work on all systems)
+        let transformState = visible ? ProcessApplicationTransformState(kProcessTransformToForegroundApplication)
+            : ProcessApplicationTransformState(kProcessTransformToUIElementApplication)
+
+        var psn = ProcessSerialNumber(highLongOfPSN: 0, lowLongOfPSN: UInt32(kCurrentProcess))
+        let result = TransformProcessType(&psn, transformState)
+
+        if result == 0 {
+            DebugLogger.shared.info("✓ Dock visibility updated using TransformProcessType", source: "SettingsStore")
+        } else {
+            DebugLogger.shared
+                .warning(
+                    "⚠️ TransformProcessType failed (error: \(result)). This is expected on some macOS versions.",
+                    source: "SettingsStore"
+                )
+            DebugLogger.shared.debug(
+                "   The setting is saved and will be applied when possible.",
+                source: "SettingsStore"
+            )
+        }
+
+        // Method 2: Try to notify the system of the change
+        // This may help with some system caches
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            NSApp.setActivationPolicy(visible ? .regular : .accessory)
+            DebugLogger.shared.info(
+                "✓ Activation policy updated to: \(visible ? "regular" : "accessory")",
+                source: "SettingsStore"
+            )
+        }
+
+        // Store the intended state for reference
+        UserDefaults.standard.set(visible, forKey: "IntendedDockVisibility")
+        DebugLogger.shared.info("✓ Dock visibility preference saved: \(visible)", source: "SettingsStore")
+        #endif
+    }
+
+    // MARK: - Filler Words
+
+    static let defaultFillerWords = [
+        "um",
+        "uh",
+        "er",
+        "ah",
+        "eh",
+        "umm",
+        "uhh",
+        "err",
+        "ahh",
+        "ehh",
+        "hmm",
+        "hm",
+        "mm",
+        "mmm",
+        "erm",
+        "urm",
+        "ugh",
+    ]
+
+    var fillerWords: [String] {
+        get {
+            if let stored = defaults.array(forKey: Keys.fillerWords) as? [String] {
+                return stored
+            }
+            return Self.defaultFillerWords
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.fillerWords)
+        }
+    }
+
+    var removeFillerWordsEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.removeFillerWordsEnabled) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.removeFillerWordsEnabled)
+        }
+    }
+
+    // MARK: - GAAV Mode
+
+    /// GAAV Mode: Removes first letter capitalization and trailing period from transcriptions.
+    /// Useful for search queries, form fields, or casual text input where sentence formatting is unwanted.
+    /// Feature requested by maxgaav – thank you for the suggestion!
+    var gaavModeEnabled: Bool {
+        get { self.defaults.object(forKey: Keys.gaavModeEnabled) as? Bool ?? false }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.gaavModeEnabled)
+        }
+    }
+
+    // MARK: - Media Playback Control
+
+    /// When enabled, automatically pauses system media playback when transcription starts.
+    /// Only resumes if SayIt was the one that paused it.
+    var pauseMediaDuringTranscription: Bool {
+        get { self.defaults.object(forKey: Keys.pauseMediaDuringTranscription) as? Bool ?? false }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.pauseMediaDuringTranscription)
+        }
+    }
+
+    // MARK: - Custom Dictionary
+
+    /// A custom dictionary entry that maps multiple misheard/alternate spellings to a correct replacement.
+    /// For example: ["say it", "sayit"] -> "SayIt"
+    struct CustomDictionaryEntry: Codable, Identifiable, Hashable {
+        let id: UUID
+        /// Words/phrases to look for (case-insensitive matching)
+        var triggers: [String]
+        /// The correct replacement text
+        var replacement: String
+
+        init(triggers: [String], replacement: String) {
+            self.id = UUID()
+            self.triggers = triggers.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            self.replacement = replacement
+        }
+
+        init(id: UUID, triggers: [String], replacement: String) {
+            self.id = id
+            self.triggers = triggers.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            self.replacement = replacement
+        }
+    }
+
+    /// Custom dictionary entries for word replacement
+    var customDictionaryEntries: [CustomDictionaryEntry] {
+        get {
+            guard let data = defaults.data(forKey: Keys.customDictionaryEntries),
+                  let decoded = try? JSONDecoder().decode([CustomDictionaryEntry].self, from: data)
+            else {
+                return []
+            }
+            return decoded
+        }
+        set {
+            objectWillChange.send()
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(encoded, forKey: Keys.customDictionaryEntries)
+            }
+        }
+    }
+
+    // MARK: - Speech Model (Unified ASR Model Selection)
+
+    /// Unified speech recognition model selection.
+    /// Replaces the old TranscriptionProviderOption + WhisperModelSize dual-setting.
+    enum SpeechModel: String, CaseIterable, Identifiable, Codable {
+        // Temporarily disabled in UI/runtime while Parakeet word boosting work is prioritized.
+        // Flip to `true` in a future round to re-enable Qwen without deleting implementation.
+        static let qwenPreviewEnabled = false
+
+        // MARK: - FluidAudio Models (Apple Silicon Only)
+
+        case parakeetTDT = "parakeet-tdt"
+        case qwen3Asr = "qwen3-asr"
+
+        // MARK: - Apple Native
+
+        case appleSpeech = "apple-speech"
+        case appleSpeechAnalyzer = "apple-speech-analyzer"
+
+        // MARK: - Whisper Models (Universal)
+
+        case whisperMedium = "whisper-medium"
+        case whisperLargeTurbo = "whisper-large-turbo" // temporarily disabled in UI
+        case whisperLarge = "whisper-large"
+
+        var id: String { rawValue }
+
+        // MARK: - Display Properties
+
+        var displayName: String {
+            switch self {
+            case .parakeetTDT: return "Parakeet TDT v3 (Multilingual)"
+            case .qwen3Asr: return "Qwen3 ASR (Beta)"
+            case .appleSpeech: return "Apple ASR Legacy"
+            case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
+            case .whisperMedium: return "Whisper Medium"
+            case .whisperLargeTurbo: return "Whisper Large Turbo (Disabled)"
+            case .whisperLarge: return "Whisper Large"
+            }
+        }
+
+        var languageSupport: String {
+            switch self {
+            case .parakeetTDT: return "25 Languages"
+            case .qwen3Asr: return "30 Languages"
+            case .appleSpeech: return "System Languages"
+            case .appleSpeechAnalyzer: return "EN, ES, FR, DE, IT, JA, KO, PT, ZH"
+            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+                return "99 Languages"
+            }
+        }
+
+        /// Whether this model can reliably handle Chinese speech.
+        var supportsChinese: Bool {
+            switch self {
+            case .parakeetTDT, .qwen3Asr:
+                return false
+            default:
+                return true
+            }
+        }
+
+        var downloadSize: String {
+            switch self {
+            case .parakeetTDT: return "~500 MB"
+            case .qwen3Asr: return "~2.0 GB"
+            case .appleSpeech: return "Built-in (Zero Download)"
+            case .appleSpeechAnalyzer: return "Built-in"
+            case .whisperMedium: return "~1.5 GB"
+            case .whisperLargeTurbo: return "~1.6 GB"
+            case .whisperLarge: return "~2.9 GB"
+            }
+        }
+
+        var requiresAppleSilicon: Bool {
+            switch self {
+            case .parakeetTDT, .qwen3Asr: return true
+            default: return false
+            }
+        }
+
+        var isWhisperModel: Bool {
+            switch self {
+            case .parakeetTDT, .qwen3Asr, .appleSpeech, .appleSpeechAnalyzer: return false
+            default: return true
+            }
+        }
+
+        /// The ggml filename for Whisper models
+        var whisperModelFile: String? {
+            switch self {
+            case .whisperMedium: return "ggml-medium.bin"
+            case .whisperLargeTurbo: return "ggml-large-v3-turbo.bin"
+            case .whisperLarge: return "ggml-large-v3.bin"
+            default: return nil
+            }
+        }
+
+        /// The short model name for whisper.cpp internal usage
+        var whisperModelName: String? {
+            switch self {
+            case .whisperMedium: return "medium"
+            case .whisperLargeTurbo: return "large-v3-turbo"
+            case .whisperLarge: return "large-v3"
+            default: return nil
+            }
+        }
+
+        // MARK: - Architecture Filtering
+
+        /// Requires macOS 26 (Tahoe) or later
+        var requiresMacOS26: Bool {
+            switch self {
+            case .appleSpeechAnalyzer: return true
+            default: return false
+            }
+        }
+
+        /// Requires macOS 15 or later.
+        var requiresMacOS15: Bool {
+            switch self {
+            case .qwen3Asr: return true
+            default: return false
+            }
+        }
+
+        /// Returns models available for the current Mac's architecture and OS
+        static var availableModels: [SpeechModel] {
+            allCases.filter { model in
+                if model == .whisperLargeTurbo {
+                    return false
+                }
+                if model == .qwen3Asr, !Self.qwenPreviewEnabled {
+                    return false
+                }
+                // Filter by Apple Silicon requirement
+                if model.requiresAppleSilicon, !CPUArchitecture.isAppleSilicon {
+                    return false
+                }
+                // Filter by macOS 15 requirement
+                if model.requiresMacOS15, #unavailable(macOS 15.0) {
+                    return false
+                }
+                // Filter by macOS 26 requirement
+                if model.requiresMacOS26 {
+                    if #available(macOS 26.0, *) {
+                        return true
+                    } else {
+                        return false
+                    }
+                }
+                return true
+            }
+        }
+
+        /// Default model for the current architecture
+        static var defaultModel: SpeechModel {
+            if CPUArchitecture.isAppleSilicon {
+                if let appleSpeech = availableModels.first(where: { $0 == .appleSpeech }) {
+                    return appleSpeech
+                }
+            }
+            return availableModels.first ?? .appleSpeech
+        }
+
+        // MARK: - UI Card Metadata
+
+        /// Human-readable marketing name for the card UI
+        var humanReadableName: String {
+            switch self {
+            case .parakeetTDT: return "Blazing Fast - Multilingual"
+            case .qwen3Asr: return "Qwen3 - Multilingual"
+            case .appleSpeech: return "Apple ASR Legacy"
+            case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
+            case .whisperMedium: return "Medium Quality"
+            case .whisperLargeTurbo: return "Higher Quality but Faster"
+            case .whisperLarge: return "Maximum Accuracy"
+            }
+        }
+
+        /// One-line description for the card UI
+        var cardDescription: String {
+            switch self {
+            case .parakeetTDT:
+                return "Fast multilingual transcription with 25 languages. Best for everyday use."
+            case .qwen3Asr:
+                return "Qwen3 multilingual ASR via FluidAudio. Higher quality, heavier memory footprint."
+            case .appleSpeech:
+                return "Built-in macOS speech recognition. No download required."
+            case .appleSpeechAnalyzer:
+                return "Advanced and modern on-device recognition for newer macOS devices."
+            case .whisperMedium:
+                return "High accuracy for demanding tasks. Requires more memory."
+            case .whisperLargeTurbo:
+                return "Near-maximum accuracy with optimized speed."
+            case .whisperLarge:
+                return "Best possible accuracy. Large download and memory usage."
+            }
+        }
+
+        /// Minimum recommended RAM in GB for this model to run safely
+        var requiredMemoryGB: Double {
+            switch self {
+            case .parakeetTDT:
+                return 4.0
+            case .qwen3Asr:
+                return 8.0
+            case .appleSpeech, .appleSpeechAnalyzer:
+                return 2.0 // Built-in, minimal overhead
+            case .whisperMedium:
+                return 6.0
+            case .whisperLargeTurbo:
+                return 8.0
+            case .whisperLarge:
+                return 10.0 // Large model needs ~6-8GB working memory + model size
+            }
+        }
+
+        /// Warning text for models with high memory requirements, nil if no warning needed
+        var memoryWarning: String? {
+            switch self {
+            case .qwen3Asr:
+                return "⚠️ Requires 8GB+ RAM. Best on newer Apple Silicon Macs."
+            case .whisperLarge:
+                return "⚠️ Requires 10GB+ RAM. May crash on systems with limited memory."
+            case .whisperLargeTurbo:
+                return "⚠️ Requires 8GB+ RAM. May be unstable on some systems."
+            case .whisperMedium:
+                return "Requires 6GB+ RAM for stable operation."
+            default:
+                return nil
+            }
+        }
+
+        /// Speed rating (1-5, higher is faster)
+        var speedRating: Int {
+            switch self {
+            case .parakeetTDT: return 5
+            case .qwen3Asr: return 3
+            case .appleSpeech: return 4
+            case .appleSpeechAnalyzer: return 4
+            case .whisperMedium: return 2
+            case .whisperLargeTurbo: return 3
+            case .whisperLarge: return 1
+            }
+        }
+
+        /// Accuracy rating (1-5, higher is more accurate)
+        var accuracyRating: Int {
+            switch self {
+            case .parakeetTDT: return 5
+            case .qwen3Asr: return 4
+            case .appleSpeech: return 4
+            case .appleSpeechAnalyzer: return 4
+            case .whisperMedium: return 4
+            case .whisperLargeTurbo: return 5
+            case .whisperLarge: return 5
+            }
+        }
+
+        /// Exact speed percentage (0.0 - 1.0) for the liquid bars
+        var speedPercent: Double {
+            switch self {
+            case .parakeetTDT: return 1.0
+            case .qwen3Asr: return 0.45
+            case .appleSpeech: return 0.60
+            case .appleSpeechAnalyzer: return 0.85
+            case .whisperMedium: return 0.40
+            case .whisperLargeTurbo: return 0.65
+            case .whisperLarge: return 0.20
+            }
+        }
+
+        /// Exact accuracy percentage (0.0 - 1.0) for the liquid bars
+        var accuracyPercent: Double {
+            switch self {
+            case .parakeetTDT: return 0.95
+            case .qwen3Asr: return 0.90
+            case .appleSpeech: return 0.60
+            case .appleSpeechAnalyzer: return 0.80
+            case .whisperMedium: return 0.80
+            case .whisperLargeTurbo: return 0.95
+            case .whisperLarge: return 1.00
+            }
+        }
+
+        /// Optional badge text for the card (e.g., "\(AppIdentity.displayName) Pick")
+        var badgeText: String? {
+            switch self {
+            case .parakeetTDT: return AppIdentity.parakeetBrandBadge
+            case .qwen3Asr: return "Beta"
+            case .appleSpeechAnalyzer: return "New"
+            default: return nil
+            }
+        }
+
+        /// Optimization level for Apple Silicon (for display)
+        var appleSiliconOptimized: Bool {
+            switch self {
+            case .parakeetTDT, .qwen3Asr, .appleSpeechAnalyzer:
+                return true
+            default:
+                return false
+            }
+        }
+
+        /// Whether this model supports real-time streaming/chunk processing.
+        /// Large Whisper models are too slow for streaming, so they only do final transcription on stop.
+        var supportsStreaming: Bool {
+            switch self {
+            case .qwen3Asr, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+                return false // Too slow for real-time chunk processing
+            default:
+                return true // All other models support streaming
+            }
+        }
+
+        /// Provider category for tab grouping
+        enum Provider: String, CaseIterable {
+            case nvidia = "NVIDIA"
+            case apple = "Apple"
+            case openai = "OpenAI"
+            case qwen = "Qwen"
+        }
+
+        /// Which provider this model belongs to
+        var provider: Provider {
+            switch self {
+            case .parakeetTDT:
+                return .nvidia
+            case .appleSpeech, .appleSpeechAnalyzer:
+                return .apple
+            case .qwen3Asr:
+                return .qwen
+            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+                return .openai
+            }
+        }
+
+        /// Get models filtered by provider
+        static func models(for provider: Provider) -> [SpeechModel] {
+            self.availableModels.filter { $0.provider == provider }
+        }
+
+        /// Whether this model is built-in or already downloaded on disk
+        var isInstalled: Bool {
+            switch self {
+            case .appleSpeech, .appleSpeechAnalyzer:
+                return true
+            case .parakeetTDT:
+                // Hardcoded path check for NVIDIA v3
+                return Self.parakeetCacheDirectory(version: "parakeet-tdt-0.6b-v3-coreml")
+            case .qwen3Asr:
+                #if canImport(FluidAudio) && ENABLE_QWEN
+                if #available(macOS 15.0, *) {
+                    return Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory())
+                }
+                return false
+                #else
+                return false
+                #endif
+            default:
+                // Whisper models
+                guard let whisperFile = self.whisperModelFile else { return false }
+                let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+                    .appendingPathComponent("WhisperModels")
+                let modelURL = directory?.appendingPathComponent(whisperFile)
+                return modelURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            }
+        }
+
+        private static func parakeetCacheDirectory(version: String) -> Bool {
+            #if canImport(FluidAudio)
+            let baseCacheDir = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
+            let modelDir = baseCacheDir.appendingPathComponent(version)
+            return FileManager.default.fileExists(atPath: modelDir.path)
+            #else
+            let baseCacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+                .appendingPathComponent(version)
+            return baseCacheDir.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            #endif
+        }
+
+        /// Brand/provider name for the model (NVIDIA, Apple, OpenAI)
+        var brandName: String {
+            switch self {
+            case .parakeetTDT:
+                return "NVIDIA"
+            case .qwen3Asr:
+                return "Qwen"
+            case .appleSpeech, .appleSpeechAnalyzer:
+                return "Apple"
+            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+                return "OpenAI"
+            }
+        }
+
+        /// Whether this model uses Apple's SF Symbol for branding (apple.logo)
+        var usesAppleLogo: Bool {
+            switch self {
+            case .appleSpeech, .appleSpeechAnalyzer: return true
+            default: return false
+            }
+        }
+
+        /// Brand color for the provider badge
+        var brandColorHex: String {
+            switch self {
+            case .parakeetTDT:
+                return "#76B900"
+            case .qwen3Asr:
+                return "#E67E22"
+            case .appleSpeech, .appleSpeechAnalyzer:
+                return "#A2AAAD" // Apple Gray
+            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+                return "#10A37F" // OpenAI Teal
+            }
+        }
+    }
+
+    // MARK: - Transcription Provider (ASR)
+
+    /// Available transcription providers
+    enum TranscriptionProviderOption: String, CaseIterable, Identifiable {
+        case auto
+        case fluidAudio
+        case whisper
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .auto: return "Automatic (Recommended)"
+            case .fluidAudio: return "FluidAudio (Apple Silicon)"
+            case .whisper: return "Whisper (Intel/Universal)"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .auto: return "Uses FluidAudio on Apple Silicon, Whisper on Intel"
+            case .fluidAudio: return "Fast CoreML-based transcription optimized for M-series chips"
+            case .whisper: return "whisper.cpp - CPU-based, works on any Mac"
+            }
+        }
+    }
+
+    /// Selected transcription provider - defaults to "auto" which picks based on architecture
+    var selectedTranscriptionProvider: TranscriptionProviderOption {
+        get {
+            guard let rawValue = defaults.string(forKey: Keys.selectedTranscriptionProvider),
+                  let option = TranscriptionProviderOption(rawValue: rawValue)
+            else {
+                return .auto
+            }
+            return option
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.selectedTranscriptionProvider)
+        }
+    }
+
+    /// Selected Whisper model size - defaults to "base"
+    var whisperModelSize: WhisperModelSize {
+        get {
+            guard let rawValue = defaults.string(forKey: Keys.whisperModelSize),
+                  let size = WhisperModelSize(rawValue: rawValue)
+            else {
+                return .base
+            }
+            return size
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.whisperModelSize)
+        }
+    }
+}
+
+extension SettingsStore {
+    /// Available Whisper model sizes
+    enum WhisperModelSize: String, CaseIterable, Identifiable {
+        case tiny = "ggml-tiny.bin"
+        case base = "ggml-base.bin"
+        case small = "ggml-small.bin"
+        case medium = "ggml-medium.bin"
+        case large = "ggml-large-v3.bin"
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .tiny: return "Tiny (~75 MB)"
+            case .base: return "Base (~142 MB)"
+            case .small: return "Small (~466 MB)"
+            case .medium: return "Medium (~1.5 GB)"
+            case .large: return "Large (~2.9 GB)"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .tiny: return "Fastest, lower accuracy"
+            case .base: return "Good balance of speed and accuracy"
+            case .small: return "Better accuracy, slower"
+            case .medium: return "High accuracy, requires more memory"
+            case .large: return "Best accuracy, large download"
+            }
+        }
+    }
+}
+
+extension SettingsStore {
+    private static let chineseLocalePrefixes: [String] = ["zh", "zho", "zh_hans", "zh_hant", "zh-cn", "zh_tw"]
+
+    private static var isChineseLocale: Bool {
+        let localeIds = [Locale.current.identifier] + Locale.preferredLanguages
+        return localeIds.contains {
+            let lower = $0.lowercased()
+            return Self.chineseLocalePrefixes.contains { lower.hasPrefix($0) }
+        }
+    }
+
+    private func normalizedSpeechModel(_ model: SpeechModel) -> SpeechModel {
+        if Self.isChineseLocale && !model.supportsChinese {
+            return .appleSpeech
+        }
+        return model
+    }
+
+    // MARK: - Unified Speech Model Selection
+
+    /// The selected speech recognition model.
+    /// This unified setting replaces the old TranscriptionProviderOption + WhisperModelSize combination.
+    var selectedSpeechModel: SpeechModel {
+        get {
+            // Check if already using new system
+            if let rawValue = defaults.string(forKey: Keys.selectedSpeechModel),
+               let model = SpeechModel(rawValue: rawValue)
+            {
+                // If Qwen was previously selected, transparently fall back while preview is disabled.
+                if model == .qwen3Asr, !SpeechModel.qwenPreviewEnabled {
+                    return SpeechModel.defaultModel
+                }
+                if model.requiresAppleSilicon && !CPUArchitecture.isAppleSilicon {
+                    return SpeechModel.defaultModel
+                }
+                if model.requiresMacOS15, #unavailable(macOS 15.0) {
+                    return SpeechModel.defaultModel
+                }
+                if model.requiresMacOS26, #unavailable(macOS 26.0) {
+                    return SpeechModel.defaultModel
+                }
+                if !SpeechModel.availableModels.contains(model) {
+                    return SpeechModel.defaultModel
+                }
+                return self.normalizedSpeechModel(model)
+            }
+
+            // Migration: Convert old settings to new SpeechModel
+            return self.normalizedSpeechModel(self.migrateToSpeechModel())
+        }
+        set {
+            objectWillChange.send()
+            let normalized = self.normalizedSpeechModel(newValue)
+            self.defaults.set(normalized.rawValue, forKey: Keys.selectedSpeechModel)
+        }
+    }
+
+    /// Migrates old TranscriptionProviderOption + WhisperModelSize settings to new SpeechModel
+    private func migrateToSpeechModel() -> SpeechModel {
+        let oldProvider = self.defaults.string(forKey: Keys.selectedTranscriptionProvider) ?? "auto"
+        let oldWhisperSize = self.defaults.string(forKey: Keys.whisperModelSize) ?? "ggml-base.bin"
+
+        let newModel: SpeechModel
+
+        switch oldProvider {
+        case "whisper":
+            // Map old whisper size to new model
+            switch oldWhisperSize {
+            case "ggml-base.bin": newModel = .whisperMedium
+            case "ggml-medium.bin": newModel = .whisperMedium
+            case "ggml-large-v3.bin": newModel = .whisperLarge
+            default: newModel = .whisperMedium
+            }
+        case "fluidAudio":
+            newModel = CPUArchitecture.isAppleSilicon ? .parakeetTDT : .appleSpeech
+        default: // "auto"
+            newModel = SpeechModel.defaultModel
+        }
+
+        let finalizedModel = SpeechModel.availableModels.contains(newModel) ? newModel : SpeechModel.defaultModel
+
+        // Persist the migrated value
+        self.defaults.set(finalizedModel.rawValue, forKey: Keys.selectedSpeechModel)
+        DebugLogger.shared.info(
+            "Migrated speech model settings: \(oldProvider)/\(oldWhisperSize) -> \(finalizedModel.rawValue)",
+            source: "SettingsStore"
+        )
+
+        return finalizedModel
+    }
+}

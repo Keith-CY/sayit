@@ -1,42 +1,29 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 5.9
+// The swift-tools-version declares the minimum version of Swift required to build this package.
+
 import PackageDescription
 
 let package = Package(
-    name: "sayit",
+    name: "SayIt",
     platforms: [
-        .macOS(.v14)
-    ],
-    products: [
-        .library(name: "SayItCore", targets: ["SayItCore"]),
-        .executable(name: "sayit", targets: ["SayItCLI"]),
-        .executable(name: "SayItApp", targets: ["SayItApp"])
+        .macOS(.v14),
     ],
     dependencies: [
-        .package(url: "https://github.com/exPHAT/SwiftWhisper.git", revision: "c340197966ebd264f3135d3955874b40f8ed58bc"),
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.7.9"),
+        .package(url: "https://github.com/MrKai77/DynamicNotchKit", from: "1.0.0"),
+        .package(url: "https://github.com/exPHAT/SwiftWhisper.git", branch: "master"),
     ],
     targets: [
-        .target(
-            name: "SayItCore",
+        .executableTarget(
+            name: "SayIt",
             dependencies: [
-                .product(name: "SwiftWhisper", package: "SwiftWhisper"),
-                .product(name: "FluidAudio", package: "FluidAudio"),
+                "DynamicNotchKit",
+                "SwiftWhisper",
             ],
-            linkerSettings: [
-                .linkedLibrary("sqlite3")
+            path: "Sources/SayIt",
+            resources: [
+                .process("Assets.xcassets"),
+                .process("Resources"),
             ]
         ),
-        .executableTarget(
-            name: "SayItCLI",
-            dependencies: ["SayItCore"]
-        ),
-        .executableTarget(
-            name: "SayItApp",
-            dependencies: ["SayItCore"]
-        ),
-        .testTarget(
-            name: "SayItCoreTests",
-            dependencies: ["SayItCore"]
-        )
     ]
 )
