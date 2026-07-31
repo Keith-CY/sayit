@@ -16,7 +16,7 @@ final class ModelRepository {
 
     /// All built-in provider IDs (not including custom/saved providers)
     static let builtInProviderIDs = [
-        "openai", "anthropic", "xai", "groq", "cerebras", "google", "openrouter", "ollama", "lmstudio", "apple-intelligence",
+        "openai", "anthropic", "xai", "groq", "cerebras", "google", "openrouter", "llamacpp", "ollama", "lmstudio", "compatible", "apple-intelligence",
     ]
 
     /// Returns the default models for a given provider ID.
@@ -37,7 +37,7 @@ final class ModelRepository {
             return ["gemini-2.5-flash"]
         case "openrouter":
             return ["openai/gpt-oss-20b"]
-        case "ollama", "lmstudio":
+        case "llamacpp", "ollama", "lmstudio", "compatible":
             // Local providers - models vary per user, they must add their own
             return []
         case "apple-intelligence":
@@ -65,13 +65,35 @@ final class ModelRepository {
             return "https://generativelanguage.googleapis.com/v1beta/openai"
         case "openrouter":
             return "https://openrouter.ai/api/v1"
+        case "llamacpp":
+            return "http://127.0.0.1:8080/v1"
         case "ollama":
             return "http://localhost:11434/v1"
         case "lmstudio":
             return "http://localhost:1234/v1"
+        case "compatible":
+            return ""
         default:
             return ""
         }
+    }
+
+    /// Normalize an OpenAI-compatible base URL into its chat-completions endpoint.
+    /// Complete native paths are preserved; trailing slashes on base URLs are removed.
+    func chatCompletionsEndpoint(for baseURL: String) -> String {
+        var endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while endpoint.hasSuffix("/") {
+            endpoint.removeLast()
+        }
+
+        if endpoint.contains("/chat/completions") ||
+            endpoint.contains("/api/chat") ||
+            endpoint.contains("/api/generate")
+        {
+            return endpoint
+        }
+
+        return "\(endpoint)/chat/completions"
     }
 
     /// Returns the display name for a provider ID
@@ -84,8 +106,10 @@ final class ModelRepository {
         case "cerebras": return "Cerebras"
         case "google": return "Google"
         case "openrouter": return "OpenRouter"
+        case "llamacpp": return "llama.cpp"
         case "ollama": return "Ollama"
         case "lmstudio": return "LM Studio"
+        case "compatible": return "OpenAI-Compatible"
         case "apple-intelligence": return "Apple Intelligence"
         default: return providerID.capitalized
         }
@@ -114,10 +138,14 @@ final class ModelRepository {
             return ("https://aistudio.google.com/apikey", "Get API Key")
         case "openrouter":
             return ("https://openrouter.ai/settings/keys", "Get API Key")
+        case "llamacpp":
+            return ("https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md", "Setup Guide")
         case "ollama":
             return nil
         case "lmstudio":
             return ("https://lmstudio.ai/docs/local-server", "Setup Guide")
+        case "compatible":
+            return nil
         default:
             return nil
         }
@@ -127,7 +155,13 @@ final class ModelRepository {
     func isLocalEndpoint(_ urlString: String) -> Bool {
         guard let url = URL(string: urlString), let host = url.host else { return false }
         let hostLower = host.lowercased()
-        if hostLower == "localhost" || hostLower == "127.0.0.1" { return true }
+        if hostLower == "localhost" ||
+            hostLower == "127.0.0.1" ||
+            hostLower == "::1" ||
+            hostLower == "[::1]"
+        {
+            return true
+        }
         if hostLower.hasPrefix("127.") || hostLower.hasPrefix("10.") || hostLower.hasPrefix("192.168.") { return true }
         if hostLower.hasPrefix("172.") {
             let components = hostLower.split(separator: ".")
@@ -155,8 +189,10 @@ final class ModelRepository {
             ("cerebras", "Cerebras"),
             ("google", "Google"),
             ("openrouter", "OpenRouter"),
+            ("llamacpp", "llama.cpp"),
             ("ollama", "Ollama"),
             ("lmstudio", "LM Studio"),
+            ("compatible", "OpenAI-Compatible"),
         ]
 
         if includeAppleIntelligence {
@@ -225,37 +261,33 @@ final class ModelRepository {
     ///   - apiKey: Optional API key for authentication
     /// - Returns: Array of model IDs sorted alphabetically
     func fetchModels(for providerID: String, baseURL: String, apiKey: String?) async throws -> [String] {
-        let isAnthropic = providerID == "anthropic" || baseURL.contains("anthropic.com")
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty else {
+            throw FetchError.invalidURL(details: "Base URL is empty.")
+        }
+
+        let isAnthropic = providerID == "anthropic" || trimmedBaseURL.contains("anthropic.com")
+        let isLocal = self.isLocalEndpoint(trimmedBaseURL)
 
         // Construct the models endpoint URL
-        let urlString = baseURL.hasSuffix("/") ? "\(baseURL)models" : "\(baseURL)/models"
+        let urlString = trimmedBaseURL.hasSuffix("/") ? "\(trimmedBaseURL)models" : "\(trimmedBaseURL)/models"
         guard let url = URL(string: urlString) else {
             DebugLogger.shared.error(
-                "fetchModels: Invalid URL constructed from baseURL='\(baseURL)' -> '\(urlString)'",
+                "fetchModels: Invalid URL constructed from baseURL='\(trimmedBaseURL)' -> '\(urlString)'",
                 source: "ModelRepository"
             )
-            throw FetchError.invalidURL(details: "Could not construct valid URL from base: \(baseURL)")
+            throw FetchError.invalidURL(details: "Could not construct valid URL from base: \(trimmedBaseURL)")
         }
 
         DebugLogger.shared.debug(
-            "fetchModels: Fetching models for '\(providerID)' from \(urlString) (isAnthropic=\(isAnthropic))",
+            "fetchModels: Fetching models for '\(providerID)' from \(urlString) (isAnthropic=\(isAnthropic), isLocal=\(isLocal))",
             source: "ModelRepository"
         )
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
-
-        // Add authentication headers (different for Anthropic)
-        if let key = apiKey, !key.isEmpty {
-            if isAnthropic {
-                // Anthropic uses x-api-key header and requires anthropic-version
-                request.setValue(key, forHTTPHeaderField: "x-api-key")
-                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-            } else {
-                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-            }
-        }
+        self.addAuthHeaders(to: &request, apiKey: apiKey, isAnthropic: isAnthropic)
 
         let data: Data
         let response: URLResponse
@@ -270,8 +302,11 @@ final class ModelRepository {
             throw FetchError.networkError(details: errorDetails)
         }
 
-        // Check for HTTP errors with detailed messages
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            if self.shouldTryTagsFallback(providerID: providerID, isLocal: isLocal, statusCode: httpResponse.statusCode) {
+                return try await self.fetchModelsFromOllamaTags(baseURL: trimmedBaseURL, apiKey: apiKey)
+            }
+
             let bodyString = String(data: data, encoding: .utf8) ?? "<unable to decode response body>"
             let errorDetails = self.interpretHTTPError(
                 statusCode: httpResponse.statusCode,
@@ -286,49 +321,142 @@ final class ModelRepository {
             throw FetchError.httpError(statusCode: httpResponse.statusCode, details: errorDetails)
         }
 
-        // Parse the response - OpenAI format: { "data": [{ "id": "model-name" }, ...] }
+        do {
+            let models = try self.parseModelsResponse(data: data)
+            return models
+        } catch {
+            if self.shouldTryTagsFallback(providerID: providerID, isLocal: isLocal, statusCode: nil) {
+                return try await self.fetchModelsFromOllamaTags(baseURL: trimmedBaseURL, apiKey: apiKey)
+            }
+            throw error
+        }
+    }
+
+    private func addAuthHeaders(to request: inout URLRequest, apiKey: String?, isAnthropic: Bool) {
+        guard let key = apiKey, !key.isEmpty else { return }
+        if isAnthropic {
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        } else {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+    }
+
+    private func parseModelsResponse(data: Data) throws -> [String] {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             let bodyPreview = String(data: data, encoding: .utf8)?.prefix(300) ?? "<binary data>"
             DebugLogger.shared.error(
-                "fetchModels: Failed to parse JSON for '\(providerID)'. Response preview: \(bodyPreview)",
+                "fetchModels: Failed to parse JSON. Response preview: \(bodyPreview)",
                 source: "ModelRepository"
             )
-            throw FetchError.invalidResponse(details: "Response is not valid JSON. Check if the base URL '\(baseURL)' is correct.")
+            throw FetchError.invalidResponse(details: "Response is not valid JSON.")
         }
 
-        // Try OpenAI/Groq/Cerebras format first
+        // OpenAI/Groq/Cerebras: { "data": [{ "id": "model-name" }, ...] }
         if let dataArray = json["data"] as? [[String: Any]] {
-            let models = dataArray.compactMap { $0["id"] as? String }
+            let models = dataArray
+                .compactMap { $0["id"] as? String }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
             DebugLogger.shared.debug(
-                "fetchModels: Found \(models.count) models for '\(providerID)' (OpenAI format)",
+                "fetchModels: Found \(models.count) models (OpenAI format)",
                 source: "ModelRepository"
             )
-            return models.sorted()
+            return Array(Set(models)).sorted()
         }
 
-        // Try Google format: { "models": [{ "name": "models/gemini-pro" }, ...] }
+        // Google/Ollama tags-like fallback format: { "models": [{ "name": "models/gemini-pro" }, ...] }
         if let modelsArray = json["models"] as? [[String: Any]] {
             let models = modelsArray.compactMap { dict -> String? in
-                if let name = dict["name"] as? String {
-                    // Google returns "models/gemini-pro", extract just the model name
-                    return name.hasPrefix("models/") ? String(name.dropFirst(7)) : name
-                }
-                return nil
+                guard let name = dict["name"] as? String else { return nil }
+                let normalized = name.hasPrefix("models/") ? String(name.dropFirst(7)) : name
+                let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
             }
             DebugLogger.shared.debug(
-                "fetchModels: Found \(models.count) models for '\(providerID)' (Google format)",
+                "fetchModels: Found \(models.count) models (models[].name format)",
                 source: "ModelRepository"
             )
-            return models.sorted()
+            return Array(Set(models)).sorted()
         }
 
-        // Log what we actually received
         let topLevelKeys = json.keys.joined(separator: ", ")
         DebugLogger.shared.error(
-            "fetchModels: Unknown response format for '\(providerID)'. Top-level keys: [\(topLevelKeys)]. Expected 'data' or 'models' array.",
+            "fetchModels: Unknown response format. Top-level keys: [\(topLevelKeys)]. Expected 'data' or 'models' array.",
             source: "ModelRepository"
         )
         throw FetchError.invalidResponse(details: "Unknown response format. Top-level keys: [\(topLevelKeys)]. Expected 'data' or 'models'.")
+    }
+
+    private func shouldTryTagsFallback(providerID: String, isLocal: Bool, statusCode: Int?) -> Bool {
+        guard isLocal else { return false }
+        // Any local OpenAI-compatible endpoint may expose Ollama-style model discovery.
+        // For HTTP errors, only fallback on endpoint-shape related failures.
+        if let code = statusCode {
+            return code == 404 || code == 405 || code == 501
+        }
+        return true
+    }
+
+    private func fetchModelsFromOllamaTags(baseURL: String, apiKey: String?) async throws -> [String] {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = self.ollamaTagsEndpoint(from: trimmedBaseURL)
+        guard let url = URL(string: endpoint) else {
+            throw FetchError.invalidURL(details: "Invalid Ollama tags URL from base: \(trimmedBaseURL)")
+        }
+
+        DebugLogger.shared.debug("fetchModels: Falling back to Ollama tags endpoint \(endpoint)", source: "ModelRepository")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        self.addAuthHeaders(to: &request, apiKey: apiKey, isAnthropic: false)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw FetchError.networkError(details: self.detailedNetworkError(error))
+        }
+
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            let bodyString = String(data: data, encoding: .utf8) ?? "<unable to decode response body>"
+            let details = "Ollama tags endpoint error (HTTP \(httpResponse.statusCode)): \(bodyString)"
+            throw FetchError.httpError(statusCode: httpResponse.statusCode, details: details)
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let modelsArray = json["models"] as? [[String: Any]]
+        else {
+            throw FetchError.invalidResponse(details: "Ollama tags response is not valid JSON object with 'models' array.")
+        }
+
+        let models = modelsArray.compactMap { dict -> String? in
+            guard let name = dict["name"] as? String else { return nil }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        if models.isEmpty {
+            throw FetchError.invalidResponse(details: "Ollama tags endpoint returned no models.")
+        }
+
+        return Array(Set(models)).sorted()
+    }
+
+    private func ollamaTagsEndpoint(from baseURL: String) -> String {
+        var normalized = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        if normalized.hasSuffix("/v1") {
+            normalized = String(normalized.dropLast(3))
+            while normalized.hasSuffix("/") {
+                normalized.removeLast()
+            }
+        }
+        return "\(normalized)/api/tags"
     }
 
     /// Provides detailed interpretation of HTTP errors
@@ -366,7 +494,7 @@ final class ModelRepository {
         case NSURLErrorTimedOut:
             return "Connection timed out - The server didn't respond in time. Check if the base URL is correct and the service is running."
         case NSURLErrorCannotConnectToHost:
-            return "Cannot connect to host - Check if the base URL is correct. For local providers (Ollama, LM Studio), ensure the server is running."
+            return "Cannot connect to host - Check if the base URL is correct. For local providers (llama.cpp, Ollama, LM Studio), ensure the server is running."
         case NSURLErrorNetworkConnectionLost:
             return "Network connection lost - Check your internet connection."
         case NSURLErrorNotConnectedToInternet:

@@ -28,7 +28,8 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     @Published var selectedModel: String = "gpt-4.1" {
         didSet {
             guard self.selectedModel != "__ADD_MODEL__" else { return }
-            self.selectedModelByProvider[self.currentProvider] = self.selectedModel
+            let key = self.providerKey(for: self.selectedProviderID)
+            self.selectedModelByProvider[key] = self.selectedModel
             self.settings.selectedModelByProvider = self.selectedModelByProvider
         }
     }
@@ -118,7 +119,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         self.settings = settings
         self.menuBarManager = menuBarManager
         self.promptTest = promptTest
-        self.openAIBaseURL = ModelRepository.shared.defaultBaseURL(for: "openai")
+        self.openAIBaseURL = settings.baseURL(for: settings.selectedProviderID)
         self.enableAIProcessing = settings.enableAIProcessing
         self.selectedProviderID = settings.selectedProviderID
     }
@@ -172,30 +173,18 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         self.selectedModelByProvider = normalizedSel
         self.settings.selectedModelByProvider = normalizedSel
 
-        // Determine initial model list AND set baseURL BEFORE calling updateCurrentProvider
-        if let saved = savedProviders.first(where: { $0.id == selectedProviderID }) {
-            let key = self.providerKey(for: self.selectedProviderID)
-            self.availableModels = self.availableModelsByProvider[key] ?? []
-            self.openAIBaseURL = saved.baseURL // Set this FIRST
-        } else if ModelRepository.shared.isBuiltIn(self.selectedProviderID) {
-            // Handle all built-in providers using ModelRepository
-            self.openAIBaseURL = ModelRepository.shared.defaultBaseURL(for: self.selectedProviderID)
-            self.availableModels = []
-        } else {
-            self.availableModels = []
-        }
-
-        // NOW update currentProvider after openAIBaseURL is set correctly
+        self.openAIBaseURL = self.providerBaseURL(for: self.selectedProviderID)
         self.updateCurrentProvider()
 
         // Restore selected model/list for selected provider
         let selectedKey = self.providerKey(for: self.selectedProviderID)
-        self.availableModels = self.availableModelsByProvider[selectedKey] ?? []
-        self.selectedModel = self.selectedModelByProvider[selectedKey] ?? ""
+        self.availableModels = self.availableModelsByProvider[selectedKey] ?? self.models(for: self.selectedProviderID)
+        self.selectedModel = self.selectedModelByProvider[selectedKey] ?? self.availableModels.first ?? ""
 
         self.connectionStatus = self.connectionStatusByProvider[self.selectedProviderID] ?? .unknown
         self.refreshVerifiedProviders()
         self.refreshProviderItems()
+        self.autoFetchModelsIfNeeded(for: self.selectedProviderID)
 
         DebugLogger.shared.debug(
             "loadSettings complete: provider=\(self.selectedProviderID), currentProvider=\(self.currentProvider), model=\(self.selectedModel), baseURL=\(self.openAIBaseURL)",
@@ -206,21 +195,20 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     // MARK: - Helper Functions
 
     func providerKey(for providerID: String) -> String {
+        let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProviderID.isEmpty else { return "" }
         // Built-in providers use their ID directly
-        if ModelRepository.shared.isBuiltIn(providerID) { return providerID }
+        if ModelRepository.shared.isBuiltIn(trimmedProviderID) { return trimmedProviderID }
         // Custom providers get "custom:" prefix (if not already present)
-        if providerID.hasPrefix("custom:") { return providerID }
-        return providerID.isEmpty ? self.currentProvider : "custom:\(providerID)"
+        if trimmedProviderID.hasPrefix("custom:") { return trimmedProviderID }
+        return "custom:\(trimmedProviderID)"
     }
 
     func providerDisplayName(for providerID: String) -> String {
-        switch providerID {
-        case "openai": return "OpenAI"
-        case "groq": return "Groq"
-        case "apple-intelligence": return "Apple Intelligence"
-        default:
-            return self.savedProviders.first(where: { $0.id == providerID })?.name ?? providerID.capitalized
+        if ModelRepository.shared.isBuiltIn(providerID) {
+            return ModelRepository.shared.displayName(for: providerID)
         }
+        return self.savedProviders.first(where: { $0.id == providerID })?.name ?? providerID.capitalized
     }
 
     func connectionStatus(for providerID: String) -> AIConnectionStatus {
@@ -303,6 +291,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         self.handleProviderChange(providerID)
         self.connectionStatus = self.connectionStatusByProvider[providerID] ?? .unknown
         self.setEditingAPIKey(true, for: providerID)
+        self.autoFetchModelsIfNeeded(for: providerID)
     }
 
     func saveProviderAPIKeys() {
@@ -368,10 +357,23 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         }
     }
 
+    func updateProviderBaseURL(_ baseURL: String, for providerID: String) {
+        if ModelRepository.shared.isBuiltIn(providerID) {
+            self.settings.setBaseURLOverride(baseURL, for: providerID)
+            if providerID == self.selectedProviderID {
+                self.openAIBaseURL = self.providerBaseURL(for: providerID)
+                self.updateCurrentProvider()
+            }
+            self.invalidateVerification(for: providerID)
+            self.autoFetchModelsIfNeeded(for: providerID)
+            return
+        }
+
+        self.updateCustomProviderBaseURL(baseURL, for: providerID)
+        self.autoFetchModelsIfNeeded(for: providerID)
+    }
+
     func updateCurrentProvider() {
-        let url = self.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        if url.contains("openai.com") { self.currentProvider = "openai"; return }
-        if url.contains("groq.com") { self.currentProvider = "groq"; return }
         self.currentProvider = self.providerKey(for: self.selectedProviderID)
     }
 
@@ -435,7 +437,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     func handleAPIKeyButtonTapped() {
         switch self.probeKeychainAccess() {
         case .granted:
-            self.newProviderApiKey = self.providerAPIKeys[self.currentProvider] ?? ""
+            self.newProviderApiKey = self.apiKey(for: self.selectedProviderID)
             self.showAPIKeyEditor = true
         case let .denied(status):
             self.keychainPermissionMessage = self.keychainPermissionExplanation(for: status)
@@ -526,8 +528,8 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
         let providerID = self.selectedProviderID
         let providerName = ModelRepository.shared.displayName(for: providerID)
-        let apiKey = self.providerAPIKeys[self.currentProvider] ?? ""
-        let baseURL = self.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = self.apiKey(for: providerID)
+        let baseURL = self.providerBaseURL(for: providerID)
         let isLocal = self.isLocalEndpoint(baseURL)
         let isAnthropic = providerID == "anthropic" || baseURL.contains("anthropic.com")
 
@@ -568,16 +570,18 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         let fullURL: String
 
         if isAnthropic {
-            // Anthropic uses /messages endpoint, not /chat/completions
-            if endpoint.contains("/messages") {
-                fullURL = endpoint
-            } else {
-                fullURL = endpoint + "/messages"
+            var normalizedEndpoint = endpoint
+            while normalizedEndpoint.hasSuffix("/") {
+                normalizedEndpoint.removeLast()
             }
-        } else if endpoint.contains("/chat/completions") || endpoint.contains("/api/chat") || endpoint.contains("/api/generate") {
-            fullURL = endpoint
+            // Anthropic uses /messages endpoint, not /chat/completions
+            if normalizedEndpoint.contains("/messages") {
+                fullURL = normalizedEndpoint
+            } else {
+                fullURL = normalizedEndpoint + "/messages"
+            }
         } else {
-            fullURL = endpoint + "/chat/completions"
+            fullURL = ModelRepository.shared.chatCompletionsEndpoint(for: endpoint)
         }
 
         // Debug logging
@@ -779,7 +783,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         case NSURLErrorTimedOut:
             return "Connection to \(providerName) timed out. Check if the base URL is correct and the service is available."
         case NSURLErrorCannotConnectToHost:
-            if providerID == "ollama" || providerID == "lmstudio" {
+            if providerID == "llamacpp" || providerID == "ollama" || providerID == "lmstudio" {
                 return "Cannot connect. Is the \(providerName) server running? Check that the local server is started."
             }
             return "Cannot connect to \(providerName). Check your internet connection and base URL."
@@ -808,31 +812,18 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             return
         }
 
-        // Check if it's a built-in provider
-        if ModelRepository.shared.isBuiltIn(newValue) {
-            self.openAIBaseURL = ModelRepository.shared.defaultBaseURL(for: newValue)
-            self.updateCurrentProvider()
-            let key = self.providerKey(for: newValue)
-            self.availableModels = self.availableModelsByProvider[key] ?? []
-            self.selectedModel = self.selectedModelByProvider[key] ?? ""
-            return
-        }
-
-        // Handle saved/custom providers
-        if let provider = savedProviders.first(where: { $0.id == newValue }) {
-            self.openAIBaseURL = provider.baseURL
-            self.updateCurrentProvider()
-            let key = self.providerKey(for: newValue)
-            self.availableModels = self.availableModelsByProvider[key] ?? []
-            self.selectedModel = self.selectedModelByProvider[key] ?? ""
-        }
+        self.openAIBaseURL = self.providerBaseURL(for: newValue)
+        self.updateCurrentProvider()
+        let key = self.providerKey(for: newValue)
+        self.availableModels = self.availableModelsByProvider[key] ?? self.models(for: newValue)
+        self.selectedModel = self.selectedModelByProvider[key] ?? self.availableModels.first ?? ""
     }
 
     func startEditingProvider() {
         // Handle built-in providers
         if ModelRepository.shared.isBuiltIn(self.selectedProviderID) {
             self.editProviderName = ModelRepository.shared.displayName(for: self.selectedProviderID)
-            self.editProviderBaseURL = self.openAIBaseURL // Use current URL (may have been customized)
+            self.editProviderBaseURL = self.providerBaseURL(for: self.selectedProviderID)
             self.showingEditProvider = true
             return
         }
@@ -857,7 +848,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         self.settings.selectedModelByProvider = self.selectedModelByProvider
         // Reset to OpenAI
         self.selectedProviderID = "openai"
-        self.openAIBaseURL = ModelRepository.shared.defaultBaseURL(for: "openai")
+        self.openAIBaseURL = self.providerBaseURL(for: "openai")
         self.updateCurrentProvider()
         // Use fetched models if available, fall back to defaults (same logic as handleProviderChange)
         self.availableModels = self.availableModelsByProvider["openai"] ?? ModelRepository.shared.defaultModels(for: "openai")
@@ -867,17 +858,20 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     func saveEditedProvider() {
         let name = self.editProviderName.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = self.editProviderBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !base.isEmpty else { return }
 
         // For built-in providers, we just update the base URL (name is not editable)
         if ModelRepository.shared.isBuiltIn(self.selectedProviderID) {
-            self.openAIBaseURL = base
+            self.settings.setBaseURLOverride(base, for: self.selectedProviderID)
+            self.openAIBaseURL = self.providerBaseURL(for: self.selectedProviderID)
             self.updateCurrentProvider()
             self.showingEditProvider = false
             self.editProviderName = ""; self.editProviderBaseURL = ""
             self.invalidateVerification(for: self.selectedProviderID)
+            self.autoFetchModelsIfNeeded(for: self.selectedProviderID)
             return
         }
+
+        guard !name.isEmpty, !base.isEmpty else { return }
 
         // For saved/custom providers, update the full provider record
         if let providerIndex = savedProviders.firstIndex(where: { $0.id == selectedProviderID }) {
@@ -887,6 +881,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             self.saveSavedProviders()
             self.openAIBaseURL = base
             self.updateCurrentProvider()
+            self.autoFetchModelsIfNeeded(for: self.selectedProviderID)
         }
         self.showingEditProvider = false
         self.editProviderName = ""; self.editProviderBaseURL = ""
@@ -919,60 +914,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     }
 
     func fetchModelsForCurrentProvider() async {
-        self.refreshingProviderID = self.selectedProviderID
-        self.isFetchingModels = true
-        self.fetchModelsError = nil
-        defer {
-            self.isFetchingModels = false
-            self.refreshingProviderID = nil
-        }
-
-        let baseURL = self.openAIBaseURL
-        let key = self.providerKey(for: self.selectedProviderID)
-        let apiKey = self.providerAPIKeys[key] ?? self.providerAPIKeys[self.selectedProviderID]
-
-        do {
-            let models = try await ModelRepository.shared.fetchModels(
-                for: self.selectedProviderID,
-                baseURL: baseURL,
-                apiKey: apiKey
-            )
-
-            // Update state on main thread
-            await MainActor.run {
-                if models.isEmpty {
-                    // Keep existing models if fetch returned empty
-                    self.fetchModelsError = "No models returned from API"
-                } else {
-                    self.availableModels = models
-                    self.availableModelsByProvider[key] = models
-                    self.settings.availableModelsByProvider = self.availableModelsByProvider
-                    self.fetchedModelsProviders.insert(key)
-
-                    if let providerIndex = self.savedProviders.firstIndex(where: { $0.id == self.selectedProviderID }) {
-                        let updatedProvider = SettingsStore.SavedProvider(
-                            id: self.savedProviders[providerIndex].id,
-                            name: self.savedProviders[providerIndex].name,
-                            baseURL: self.savedProviders[providerIndex].baseURL,
-                            models: models
-                        )
-                        self.savedProviders[providerIndex] = updatedProvider
-                        self.saveSavedProviders()
-                    }
-
-                    // Select first model if current selection not in list
-                    if !models.contains(self.selectedModel) {
-                        self.selectedModel = models.first ?? ""
-                        self.selectedModelByProvider[key] = self.selectedModel
-                        self.settings.selectedModelByProvider = self.selectedModelByProvider
-                    }
-                }
-            }
-        } catch {
-            await MainActor.run {
-                self.fetchModelsError = error.localizedDescription
-            }
-        }
+        await self.fetchModels(for: self.selectedProviderID)
     }
 
     func models(for providerID: String) -> [String] {
@@ -992,7 +934,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     func fetchModels(for providerID: String) async {
         let baseURL = self.providerBaseURL(for: providerID)
         let key = self.providerKey(for: providerID)
-        let apiKey = self.providerAPIKeys[key] ?? self.providerAPIKeys[providerID]
+        let apiKey = self.apiKey(for: providerID)
 
         self.refreshingProviderID = providerID
         self.isFetchingModels = true
@@ -1051,16 +993,16 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
     }
 
     private func providerBaseURL(for providerID: String) -> String {
-        if providerID == self.selectedProviderID {
-            return self.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if let saved = self.savedProviders.first(where: { $0.id == providerID }) {
-            return saved.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if ModelRepository.shared.isBuiltIn(providerID) {
-            return ModelRepository.shared.defaultBaseURL(for: providerID).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return ""
+        return self.settings.baseURL(for: providerID).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func resolvedBaseURL(for providerID: String) -> String {
+        self.providerBaseURL(for: providerID)
+    }
+
+    func apiKey(for providerID: String) -> String {
+        let key = self.providerKey(for: providerID)
+        return self.providerAPIKeys[key] ?? self.providerAPIKeys[providerID] ?? ""
     }
 
     private func fingerprint(baseURL: String, apiKey: String) -> String? {
@@ -1086,7 +1028,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         let key = self.providerKey(for: providerID)
         guard let stored = self.settings.verifiedProviderFingerprints[key] else { return }
         let baseURL = self.providerBaseURL(for: providerID)
-        let apiKey = self.providerAPIKeys[key] ?? ""
+        let apiKey = self.apiKey(for: providerID)
         let current = self.fingerprint(baseURL: baseURL, apiKey: apiKey)
         if current != stored {
             self.settings.verifiedProviderFingerprints.removeValue(forKey: key)
@@ -1118,7 +1060,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
                 continue
             }
             let baseURL = self.providerBaseURL(for: providerID)
-            let apiKey = self.providerAPIKeys[key] ?? ""
+            let apiKey = self.apiKey(for: providerID)
             let current = self.fingerprint(baseURL: baseURL, apiKey: apiKey)
             if current == stored {
                 statuses[providerID] = .success
@@ -1208,6 +1150,20 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
         self.showingSaveProvider = false
         self.newProviderName = ""; self.newProviderBaseURL = ""; self.newProviderApiKey = ""; self.newProviderModels = ""
+    }
+
+    private func autoFetchModelsIfNeeded(for providerID: String) {
+        guard providerID != "apple-intelligence" else { return }
+        let key = self.providerKey(for: providerID)
+        guard !self.fetchedModelsProviders.contains(key) else { return }
+
+        let baseURL = self.providerBaseURL(for: providerID)
+        guard !baseURL.isEmpty, self.isLocalEndpoint(baseURL) else { return }
+        guard self.models(for: providerID).isEmpty else { return }
+
+        Task {
+            await self.fetchModels(for: providerID)
+        }
     }
 
     // MARK: - Prompt Editor / Test

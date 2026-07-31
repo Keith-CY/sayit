@@ -511,16 +511,17 @@ extension AIEnhancementSettingsView {
             )
         }
         let isCustom = !ModelRepository.shared.isBuiltIn(item.id)
-        let baseURL = self.viewModel.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL = self.providerBaseURL(for: item).trimmingCharacters(in: .whitespacesAndNewlines)
         let isLocal = self.viewModel.isLocalEndpoint(baseURL)
         let apiKeyValue = self.viewModel.providerAPIKeys[providerKey] ?? ""
         let hasAPIKey = !apiKeyValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let models = self.viewModel.availableModelsByProvider[providerKey] ?? []
         let hasModels = !models.isEmpty
-        let isRefreshing = self.viewModel.isFetchingModels && self.viewModel.selectedProviderID == item.id
+        let isRefreshing = self.viewModel.refreshingProviderID == item.id
         let hasName = isCustom ? !(self.viewModel.savedProviders.first { $0.id == item.id }?.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty : true
         let canFetchModels = hasName && (isLocal ? !baseURL.isEmpty : (hasAPIKey && !baseURL.isEmpty))
-        let canVerify = hasModels && !self.viewModel.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && canFetchModels
+        let selectedModelForProvider = self.viewModel.selectedModelByProvider[providerKey] ?? ""
+        let canVerify = hasModels && !selectedModelForProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && canFetchModels
         let isVerified = self.viewModel.connectionStatus(for: item.id) == .success
         let apiKeyBinding = Binding(
             get: { self.viewModel.providerAPIKeys[providerKey] ?? "" },
@@ -533,9 +534,9 @@ extension AIEnhancementSettingsView {
             }
         )
         let baseURLBinding = Binding(
-            get: { self.viewModel.savedProviders.first(where: { $0.id == item.id })?.baseURL ?? self.viewModel.openAIBaseURL },
+            get: { self.viewModel.savedProviders.first(where: { $0.id == item.id })?.baseURL ?? self.viewModel.resolvedBaseURL(for: item.id) },
             set: { newValue in
-                self.viewModel.updateCustomProviderBaseURL(newValue, for: item.id)
+                self.viewModel.updateProviderBaseURL(newValue, for: item.id)
             }
         )
 
@@ -580,20 +581,20 @@ extension AIEnhancementSettingsView {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 13))
                     }
+                }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "link")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text("Base URL")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
-                        TextField("https://api.yourprovider.com/v1", text: baseURLBinding)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 13, design: .monospaced))
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "link")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Base URL")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
                     }
+                    TextField("https://api.yourprovider.com/v1", text: baseURLBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 13, design: .monospaced))
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -638,8 +639,9 @@ extension AIEnhancementSettingsView {
                         models: models,
                         selectedModel: self.modelBinding(for: item.id),
                         onRefresh: {
+                            self.activateProvider(item.id)
                             self.viewModel.saveProviderAPIKeys()
-                            Task { await self.viewModel.fetchModelsForCurrentProvider() }
+                            await self.viewModel.fetchModels(for: item.id)
                         },
                         isRefreshing: isRefreshing,
                         refreshEnabled: canFetchModels,
@@ -673,6 +675,7 @@ extension AIEnhancementSettingsView {
 
                 if canVerify {
                     Button(action: {
+                        self.activateProvider(item.id)
                         self.viewModel.saveProviderAPIKeys()
                         Task { await self.viewModel.testAPIConnection() }
                     }) {
@@ -787,7 +790,7 @@ extension AIEnhancementSettingsView {
         let providerKey = self.viewModel.providerKey(for: item.id)
         let models = self.viewModel.availableModelsByProvider[providerKey] ?? []
         let isSelected = item.id == self.viewModel.selectedProviderID
-        let isRefreshing = self.viewModel.isFetchingModels && self.viewModel.selectedProviderID == item.id
+        let isRefreshing = self.viewModel.refreshingProviderID == item.id
         let baseURL = self.providerBaseURL(for: item).trimmingCharacters(in: .whitespacesAndNewlines)
         let isLocal = self.viewModel.isLocalEndpoint(baseURL)
         let apiKeyValue = self.viewModel.providerAPIKeys[providerKey] ?? ""
@@ -828,7 +831,7 @@ extension AIEnhancementSettingsView {
                     selectedModel: self.modelBinding(for: item.id),
                     onRefresh: {
                         self.activateProvider(item.id)
-                        await self.viewModel.fetchModelsForCurrentProvider()
+                        await self.viewModel.fetchModels(for: item.id)
                     },
                     isRefreshing: isRefreshing,
                     refreshEnabled: canFetchModels,
@@ -893,16 +896,7 @@ extension AIEnhancementSettingsView {
     }
 
     private func providerBaseURL(for item: ProviderItem) -> String {
-        if item.id == self.viewModel.selectedProviderID {
-            return self.viewModel.openAIBaseURL
-        }
-        if let saved = self.viewModel.savedProviders.first(where: { $0.id == item.id }) {
-            return saved.baseURL
-        }
-        if ModelRepository.shared.isBuiltIn(item.id) {
-            return ModelRepository.shared.defaultBaseURL(for: item.id)
-        }
-        return ""
+        self.viewModel.resolvedBaseURL(for: item.id)
     }
 
     private func providerLogoView(for item: ProviderItem) -> some View {
@@ -956,6 +950,9 @@ extension AIEnhancementSettingsView {
         if id.contains("ollama") || name.contains("ollama") {
             return Color(red: 0.95, green: 0.95, blue: 0.95) // Light gray
         }
+        if id.contains("llamacpp") || name.contains("llama.cpp") {
+            return Color(red: 0.95, green: 0.95, blue: 0.95) // Light gray
+        }
         if id.contains("lmstudio") || name.contains("lm studio") || name.contains("lmstudio") {
             return Color(red: 0.15, green: 0.55, blue: 0.35) // Green
         }
@@ -999,6 +996,9 @@ extension AIEnhancementSettingsView {
         }
         if id.contains("ollama") || name.contains("ollama") {
             return "Provider_Ollama"
+        }
+        if id.contains("llamacpp") || name.contains("llama.cpp") {
+            return "Provider_Compatible"
         }
         if id.contains("lmstudio") || name.contains("lm studio") || name.contains("lmstudio") {
             return "Provider_LMStudio"
@@ -1089,6 +1089,8 @@ extension AIEnhancementSettingsView {
     var editProviderSection: some View {
         let providerKey = self.viewModel.providerKey(for: self.viewModel.selectedProviderID)
         let isBuiltIn = ModelRepository.shared.isBuiltIn(self.viewModel.selectedProviderID)
+        let selectedProviderID = self.viewModel.selectedProviderID
+        let isAppleProvider = selectedProviderID == "apple-intelligence"
         let apiKeyBinding = Binding(
             get: { self.viewModel.providerAPIKeys[providerKey] ?? "" },
             set: { self.viewModel.providerAPIKeys[providerKey] = $0 }
@@ -1122,57 +1124,70 @@ extension AIEnhancementSettingsView {
                                 .font(.system(size: 13))
                         }
                         .frame(maxWidth: 200)
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "link")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text("Base URL")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                            }
-                            TextField("e.g., http://localhost:11434/v1", text: self.$viewModel.editProviderBaseURL)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 13, design: .monospaced))
-                        }
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "key")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("API Key")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack(alignment: .center, spacing: 8) {
-                        SecureField("Enter API key", text: apiKeyBinding)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 13))
-                            .frame(maxWidth: 200)
-                        if let websiteInfo = ModelRepository.shared.providerWebsiteURL(for: self.viewModel.selectedProviderID),
-                           let url = URL(string: websiteInfo.url)
-                        {
-                            Button(action: { NSWorkspace.shared.open(url) }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: websiteInfo.label.contains("Guide") ? "book.fill" : "key.fill")
-                                        .font(.system(size: 10))
-                                    Text(websiteInfo.label)
-                                        .font(.system(size: 11, weight: .medium))
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(self.theme.palette.accent)
-                                )
-                                .foregroundStyle(.white)
-                            }
-                            .buttonStyle(.plain)
+                if !isAppleProvider {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "link")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Base URL")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
                         }
+                        TextField("e.g., http://localhost:11434/v1", text: self.$viewModel.editProviderBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 13, design: .monospaced))
+                    }
+                }
+
+                if !isAppleProvider {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "key")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("API Key")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack(alignment: .center, spacing: 8) {
+                            SecureField("Enter API key", text: apiKeyBinding)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 13))
+                                .frame(maxWidth: 200)
+                            if let websiteInfo = ModelRepository.shared.providerWebsiteURL(for: self.viewModel.selectedProviderID),
+                               let url = URL(string: websiteInfo.url)
+                            {
+                                Button(action: { NSWorkspace.shared.open(url) }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: websiteInfo.label.contains("Guide") ? "book.fill" : "key.fill")
+                                            .font(.system(size: 10))
+                                        Text(websiteInfo.label)
+                                            .font(.system(size: 11, weight: .medium))
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(self.theme.palette.accent)
+                                    )
+                                    .foregroundStyle(.white)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.fluidGreen)
+                        Text("Apple Intelligence does not require API key or base URL configuration.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -1180,11 +1195,7 @@ extension AIEnhancementSettingsView {
             HStack(spacing: 10) {
                 Button(action: {
                     self.viewModel.saveProviderAPIKeys()
-                    if !isBuiltIn {
-                        self.viewModel.saveEditedProvider()
-                    } else {
-                        self.viewModel.showingEditProvider = false
-                    }
+                    self.viewModel.saveEditedProvider()
                 }) {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark")
@@ -1193,9 +1204,10 @@ extension AIEnhancementSettingsView {
                     }
                 }
                 .buttonStyle(GlassButtonStyle(height: AISettingsLayout.controlHeight))
-                .disabled(!isBuiltIn &&
+                .disabled((!isBuiltIn &&
                     (self.viewModel.editProviderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        self.viewModel.editProviderBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                        self.viewModel.editProviderBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) ||
+                    (isBuiltIn && isAppleProvider))
 
                 Button("Cancel") {
                     self.viewModel.showingEditProvider = false
@@ -1283,7 +1295,7 @@ extension AIEnhancementSettingsView {
             SearchableModelPicker(
                 models: self.viewModel.availableModels,
                 selectedModel: self.$viewModel.selectedModel,
-                onRefresh: { await self.viewModel.fetchModelsForCurrentProvider() },
+                onRefresh: { await self.viewModel.fetchModels(for: self.viewModel.selectedProviderID) },
                 isRefreshing: self.viewModel.isFetchingModels,
                 controlWidth: AISettingsLayout.pickerWidth,
                 controlHeight: AISettingsLayout.controlHeight
@@ -1507,7 +1519,12 @@ extension AIEnhancementSettingsView {
     }
 
     var connectionTestSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let selectedProviderID = self.viewModel.selectedProviderID
+        let baseURL = self.viewModel.resolvedBaseURL(for: selectedProviderID).trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLocal = self.viewModel.isLocalEndpoint(baseURL)
+        let apiKey = self.viewModel.apiKey(for: selectedProviderID).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 Button(action: { Task { await self.viewModel.testAPIConnection() } }) {
                     Text(self.viewModel.isTestingConnection ? "Verifying..." : "Verify Connection")
@@ -1517,8 +1534,7 @@ extension AIEnhancementSettingsView {
                 .buttonStyle(CompactButtonStyle(isReady: true))
                 .frame(minWidth: AISettingsLayout.primaryActionMinWidth, minHeight: AISettingsLayout.controlHeight)
                 .disabled(self.viewModel.isTestingConnection ||
-                    (!self.viewModel.isLocalEndpoint(self.viewModel.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) &&
-                        (self.viewModel.providerAPIKeys[self.viewModel.currentProvider] ?? "").isEmpty))
+                    (!isLocal && apiKey.isEmpty))
             }
 
             // Connection Status Display
@@ -1578,7 +1594,12 @@ extension AIEnhancementSettingsView {
     }
 
     var apiKeyEditorSheet: some View {
-        VStack(spacing: 14) {
+        let selectedProviderID = self.viewModel.selectedProviderID
+        let providerKey = self.viewModel.providerKey(for: selectedProviderID)
+        let baseURL = self.viewModel.resolvedBaseURL(for: selectedProviderID).trimmingCharacters(in: .whitespacesAndNewlines)
+        let isLocal = self.viewModel.isLocalEndpoint(baseURL)
+
+        return VStack(spacing: 14) {
             Text("Enter \(self.viewModel.providerDisplayName(for: self.viewModel.selectedProviderID)) API Key")
                 .font(.headline)
             SecureField("API Key (optional for local endpoints)", text: self.$viewModel.newProviderApiKey)
@@ -1589,7 +1610,7 @@ extension AIEnhancementSettingsView {
                     .frame(minWidth: AISettingsLayout.actionMinWidth, minHeight: AISettingsLayout.controlHeight)
                 Button("OK") {
                     let trimmedKey = self.viewModel.newProviderApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.viewModel.providerAPIKeys[self.viewModel.currentProvider] = trimmedKey
+                    self.viewModel.providerAPIKeys[providerKey] = trimmedKey
                     self.viewModel.saveProviderAPIKeys()
                     if self.viewModel.connectionStatus != .unknown {
                         self.viewModel.connectionStatus = .unknown
@@ -1599,7 +1620,7 @@ extension AIEnhancementSettingsView {
                 }
                 .buttonStyle(GlassButtonStyle(height: AISettingsLayout.controlHeight))
                 .frame(minWidth: AISettingsLayout.actionMinWidth, minHeight: AISettingsLayout.controlHeight)
-                .disabled(!self.viewModel.isLocalEndpoint(self.viewModel.openAIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)) &&
+                .disabled(!isLocal &&
                     self.viewModel.newProviderApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }

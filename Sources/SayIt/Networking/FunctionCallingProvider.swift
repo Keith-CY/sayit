@@ -143,39 +143,6 @@ final class FunctionCallingProvider {
         case error(String)
     }
 
-    // Helper function to detect if the endpoint is local
-    private func isLocalEndpoint(_ urlString: String) -> Bool {
-        guard let url = URL(string: urlString),
-              let host = url.host else { return false }
-
-        let hostLower = host.lowercased()
-
-        // Check for localhost variations
-        if hostLower == "localhost" || hostLower == "127.0.0.1" {
-            return true
-        }
-
-        // Check for private IP ranges
-        if hostLower.hasPrefix("127.") || hostLower.hasPrefix("10.") ||
-            hostLower.hasPrefix("192.168.")
-        {
-            return true
-        }
-
-        // 172.16.x.x - 172.31.x.x
-        if hostLower.hasPrefix("172.") {
-            let components = hostLower.split(separator: ".")
-            if components.count >= 2,
-               let secondOctet = Int(components[1]),
-               secondOctet >= 16 && secondOctet <= 31
-            {
-                return true
-            }
-        }
-
-        return false
-    }
-
     /// Process user input with LLM and MCP tools
     func processWithTools(
         userText: String,
@@ -185,25 +152,16 @@ final class FunctionCallingProvider {
         apiKey: String,
         baseURL: String
     ) async -> LLMResult {
-        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
-            ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Build the full URL
-        let fullEndpoint: String
-        if endpoint.contains("/chat/completions") ||
-            endpoint.contains("/api/chat") ||
-            endpoint.contains("/api/generate")
-        {
-            fullEndpoint = endpoint
-        } else {
-            fullEndpoint = endpoint + "/chat/completions"
+        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty else {
+            return .error("Base URL is required")
         }
+
+        let fullEndpoint = ModelRepository.shared.chatCompletionsEndpoint(for: endpoint)
 
         guard let url = URL(string: fullEndpoint) else {
             return .error("Invalid Base URL")
         }
-
-        let isLocal = self.isLocalEndpoint(endpoint)
 
         // Build messages array
         var messages = conversationHistory
@@ -244,9 +202,9 @@ final class FunctionCallingProvider {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Only add Authorization header for non-local endpoints
-        if !isLocal {
-            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAPIKey.isEmpty {
+            request.addValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         }
 
         request.httpBody = jsonData
@@ -326,24 +284,16 @@ final class FunctionCallingProvider {
         apiKey: String,
         baseURL: String
     ) async -> LLMResult {
-        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
-            ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let fullEndpoint: String
-        if endpoint.contains("/chat/completions") ||
-            endpoint.contains("/api/chat") ||
-            endpoint.contains("/api/generate")
-        {
-            fullEndpoint = endpoint
-        } else {
-            fullEndpoint = endpoint + "/chat/completions"
+        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty else {
+            return .error("Base URL is required")
         }
+
+        let fullEndpoint = ModelRepository.shared.chatCompletionsEndpoint(for: endpoint)
 
         guard let url = URL(string: fullEndpoint) else {
             return .error("Invalid Base URL")
         }
-
-        let isLocal = self.isLocalEndpoint(endpoint)
 
         // Use conversation history as-is (tool messages should already be added by caller)
         let messages = conversationHistory
@@ -370,8 +320,9 @@ final class FunctionCallingProvider {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        if !isLocal {
-            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAPIKey.isEmpty {
+            request.addValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         }
 
         request.httpBody = jsonData

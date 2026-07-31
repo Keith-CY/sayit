@@ -164,7 +164,9 @@ final class WhisperProvider: TranscriptionProvider {
 
         // Load the model
         DebugLogger.shared.info("WhisperProvider: Loading Whisper model...", source: "WhisperProvider")
-        self.whisper = Whisper(fromFileURL: self.modelURL)
+        let params = WhisperParams()
+        params.language = .auto
+        self.whisper = Whisper(fromFileURL: self.modelURL, withParams: params)
 
         self.loadedModelName = currentModelName
         self.isReady = true
