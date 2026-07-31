@@ -197,8 +197,10 @@ RELEASE_NOTES_*
 
 **.dmg
 **.dmg.zip
-# Documentation backups (for future reference, not needed in repo)
-docs/
+# Documentation backups (keep only maintained reference files)
+docs/*
+!docs/README.md
+!docs/GITHUB_UPDATES.md
 
 
 .agent/

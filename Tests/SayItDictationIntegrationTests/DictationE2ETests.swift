@@ -18,6 +18,41 @@ final class DictationE2ETests: XCTestCase {
     private static let llamaCppBaseURLEnvKey = "LLAMA_CPP_BASE_URL"
     private static let llamaCppTestModelEnvKey = "LLAMA_CPP_TEST_MODEL"
 
+    @MainActor
+    func testAppVersion_displayNameIncludesBuildNumber() {
+        let version = AppVersion(marketingVersion: "1.6.0", buildNumber: "9")
+
+        XCTAssertEqual(version.displayName, "1.6.0 (9)")
+        XCTAssertEqual(
+            AppVersion(marketingVersion: "Development", buildNumber: "").displayName,
+            "Development"
+        )
+    }
+
+    @MainActor
+    func testUpdateConfigurationUsesStableSignedGitHubReleaseFeed() {
+        let feedURL = URL(string: UpdateConfiguration.feedURLString)
+
+        XCTAssertEqual(feedURL?.scheme, "https")
+        XCTAssertEqual(feedURL?.host, "github.com")
+        XCTAssertEqual(feedURL?.path, "/Keith-CY/sayit/releases/latest/download/appcast.xml")
+        XCTAssertNil(feedURL?.query)
+        XCTAssertNil(feedURL?.fragment)
+
+        XCTAssertEqual(
+            Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+            UpdateConfiguration.feedURLString
+        )
+        XCTAssertEqual(
+            Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+            "okwvFkt/6hyeTGXaFgUIqODpG2pJo6HwkxD47p8fQRs="
+        )
+        XCTAssertEqual(
+            Bundle.main.object(forInfoDictionaryKey: "SURequireSignedFeed") as? Bool,
+            true
+        )
+    }
+
     func testModelRepository_includesCompatibleProviderMetadata() {
         let repository = ModelRepository.shared
 

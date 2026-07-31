@@ -17,3 +17,7 @@ This folder contains reference notes for future work.
 - Local endpoints may omit an API key; if one is configured, it is still sent for authenticated local/LAN gateways.
 - Optional dictation cleanup falls back to the raw transcript on provider failure or empty output.
 - `中文 + English (Mixed)` routes speech recognition to Whisper automatic language detection.
+
+## Release Notes
+
+- [GitHub update and release process](GITHUB_UPDATES.md)

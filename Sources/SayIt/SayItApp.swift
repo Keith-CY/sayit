@@ -13,6 +13,7 @@ import SwiftUI
 struct SayItApp: App {
     @StateObject private var menuBarManager = MenuBarManager()
     @StateObject private var appServices: AppServices
+    @StateObject private var updateController = UpdateController.shared
     @ObservedObject private var settings = SettingsStore.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
