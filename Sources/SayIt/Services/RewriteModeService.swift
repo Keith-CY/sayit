@@ -281,14 +281,13 @@ final class RewriteModeService: ObservableObject {
                 "contextChars=\(contextText.count) | contextInjected=\(!contextBlock.isEmpty)"
         )
         let apiKey = settings.getAPIKey(for: providerID) ?? ""
-
-        let baseURL: String
-        if let provider = settings.savedProviders.first(where: { $0.id == providerID }) {
-            baseURL = provider.baseURL
-        } else if ModelRepository.shared.isBuiltIn(providerID) {
-            baseURL = ModelRepository.shared.defaultBaseURL(for: providerID)
-        } else {
-            baseURL = ModelRepository.shared.defaultBaseURL(for: "openai")
+        let baseURL = settings.baseURL(for: providerID)
+        guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(
+                domain: "RewriteMode",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Base URL is required for provider '\(providerID)'. Configure it in AI Settings."]
+            )
         }
 
         // Build messages array for LLMClient
@@ -327,7 +326,8 @@ final class RewriteModeService: ObservableObject {
             tools: [],
             temperature: isReasoningModel ? nil : 0.7,
             maxTokens: isReasoningModel ? 32_000 : nil, // Reasoning models like o1 need a large budget for extended thought chains
-            extraParameters: extraParams
+            extraParameters: extraParams,
+            providerID: providerID
         )
 
         DebugLogger.shared.info(
@@ -384,13 +384,7 @@ final class RewriteModeService: ObservableObject {
     }
 
     private func providerBaseURL(for providerID: String, settings: SettingsStore) -> String {
-        if let saved = settings.savedProviders.first(where: { $0.id == providerID }) {
-            return saved.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if ModelRepository.shared.isBuiltIn(providerID) {
-            return ModelRepository.shared.defaultBaseURL(for: providerID).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return ""
+        settings.baseURL(for: providerID).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func providerFingerprint(baseURL: String, apiKey: String) -> String? {

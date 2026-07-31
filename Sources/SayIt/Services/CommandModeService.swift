@@ -697,14 +697,13 @@ final class CommandModeService: ObservableObject {
         let providerID = settings.commandModeSelectedProviderID
         let model = settings.commandModeSelectedModel ?? "gpt-4.1"
         let apiKey = settings.getAPIKey(for: providerID) ?? ""
-
-        let baseURL: String
-        if let provider = settings.savedProviders.first(where: { $0.id == providerID }) {
-            baseURL = provider.baseURL
-        } else if ModelRepository.shared.isBuiltIn(providerID) {
-            baseURL = ModelRepository.shared.defaultBaseURL(for: providerID)
-        } else {
-            baseURL = ModelRepository.shared.defaultBaseURL(for: "openai")
+        let baseURL = settings.baseURL(for: providerID)
+        guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(
+                domain: "CommandMode",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Base URL is required for provider '\(providerID)'. Configure it in AI Settings."]
+            )
         }
 
         // Build conversation with agentic system prompt
@@ -874,7 +873,8 @@ final class CommandModeService: ObservableObject {
             tools: [TerminalService.toolDefinition],
             temperature: isReasoningModel ? nil : 0.1,
             maxTokens: isReasoningModel ? 32_000 : nil, // Reasoning models like o1 need a large budget for extended thought chains
-            extraParameters: extraParams
+            extraParameters: extraParams,
+            providerID: providerID
         )
 
         // Keep retry logic (exponential backoff)

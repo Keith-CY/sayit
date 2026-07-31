@@ -35,6 +35,7 @@ final class SettingsStore: ObservableObject {
         static let selectedProviderID = "SelectedProviderID"
         static let providerAPIKeys = "ProviderAPIKeys"
         static let providerAPIKeyIdentifiers = "ProviderAPIKeyIdentifiers"
+        static let providerBaseURLOverrides = "ProviderBaseURLOverrides"
         static let savedProviders = "SavedProviders"
         static let verifiedProviderFingerprints = "VerifiedProviderFingerprints"
         static let hotkeyShortcutKey = "HotkeyShortcutKey"
@@ -446,6 +447,7 @@ final class SettingsStore: ObservableObject {
         5. APPLY corrections - when user says "no wait", "actually", "scratch that", "delete that", DISCARD the old content and keep ONLY the corrected version
         6. PRESERVE intent - keep the user's meaning, just clean the delivery
         7. EXPAND abbreviations - thx → thanks, pls → please, u → you, ur → your/you're, gonna → going to
+        8. PRESERVE languages - never translate; copy every English word or phrase from the input verbatim, including casing, while keeping the surrounding Chinese
 
         ## Critical:
         - Output ONLY the cleaned text
@@ -454,6 +456,8 @@ final class SettingsStore: ObservableObject {
         - Do NOT add explanations or commentary
         - Do NOT wrap in quotes unless the input had quotes
         - Do NOT add filler words (um, uh) to the output
+        - LANGUAGE LOCK is non-negotiable: never replace English words with Chinese or Chinese words with English
+        - Example: "呃今天 review 这个 pull request 然后 deploy 到 staging" → "今天 review 这个 pull request，然后 deploy 到 staging。"
         - PRESERVE ordinals in lists: "first call client, second review contract" → keep "First" and "Second"
         - PRESERVE politeness words: "please", "thank you" at end of sentences
         """
@@ -779,6 +783,18 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Optional per-provider base URL overrides for built-in providers.
+    /// Custom providers keep their base URL in `savedProviders`.
+    var providerBaseURLOverrides: [String: String] {
+        get {
+            (self.defaults.dictionary(forKey: Keys.providerBaseURLOverrides) as? [String: String]) ?? [:]
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(self.sanitizeBaseURLOverrides(newValue), forKey: Keys.providerBaseURLOverrides)
+        }
+    }
+
     var savedProviders: [SavedProvider] {
         get {
             guard let data = defaults.data(forKey: Keys.savedProviders),
@@ -803,6 +819,53 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Resolve the effective base URL for a provider.
+    /// Resolution order:
+    /// 1) saved custom provider URL
+    /// 2) built-in override URL
+    /// 3) built-in default URL from ModelRepository
+    /// 4) empty string
+    func baseURL(for providerID: String) -> String {
+        let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProviderID.isEmpty else { return "" }
+
+        if let saved = self.savedProviders.first(where: { $0.id == trimmedProviderID }) {
+            return saved.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        guard ModelRepository.shared.isBuiltIn(trimmedProviderID) else {
+            return ""
+        }
+
+        let key = self.canonicalProviderKey(for: trimmedProviderID)
+        if let override = self.providerBaseURLOverrides[key] {
+            return override.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return ModelRepository.shared.defaultBaseURL(for: trimmedProviderID).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Set or clear a built-in provider base URL override.
+    /// Passing nil/empty removes the override (reverting to the built-in default).
+    func setBaseURLOverride(_ value: String?, for providerID: String) {
+        let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ModelRepository.shared.isBuiltIn(trimmedProviderID) else { return }
+
+        var overrides = self.providerBaseURLOverrides
+        let key = self.canonicalProviderKey(for: trimmedProviderID)
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmedValue.isEmpty {
+            overrides.removeValue(forKey: key)
+        } else {
+            overrides[key] = trimmedValue
+        }
+        self.providerBaseURLOverrides = overrides
+    }
+
+    func clearBaseURLOverride(for providerID: String) {
+        self.setBaseURLOverride(nil, for: providerID)
+    }
+
     /// Check if the current AI provider is fully configured (API key/baseURL + selected model)
     var isAIConfigured: Bool {
         let providerID = self.selectedProviderID
@@ -811,18 +874,16 @@ final class SettingsStore: ObservableObject {
         if providerID == "apple-intelligence" { return true }
 
         // 2. Get base URL to check for local endpoints
-        var baseURL = ""
-        if let saved = self.savedProviders.first(where: { $0.id == providerID }) {
-            baseURL = saved.baseURL
-        } else {
-            baseURL = ModelRepository.shared.defaultBaseURL(for: providerID)
-        }
-
+        let baseURL = self.baseURL(for: providerID)
+        let hasBaseURL = !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasBaseURL else { return false }
         let isLocal = ModelRepository.shared.isLocalEndpoint(baseURL)
 
         // 3. Check for API key and selected model
         let key = self.canonicalProviderKey(for: providerID)
-        let hasApiKey = !(self.providerAPIKeys[key]?.isEmpty ?? true)
+        let apiKey = (self.getAPIKey(for: providerID) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasApiKey = !apiKey.isEmpty
 
         let selectedModel = self.selectedModelByProvider[key]
         let hasSelectedModel = !(selectedModel?.isEmpty ?? true)
@@ -834,11 +895,7 @@ final class SettingsStore: ObservableObject {
 
     /// The base URL for the currently selected AI provider
     var activeBaseURL: String {
-        let providerID = self.selectedProviderID
-        if let saved = self.savedProviders.first(where: { $0.id == providerID }) {
-            return saved.baseURL
-        }
-        return ModelRepository.shared.defaultBaseURL(for: providerID)
+        self.baseURL(for: self.selectedProviderID)
     }
 
     var hotkeyShortcut: HotkeyShortcut {
@@ -1684,6 +1741,16 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    private func sanitizeBaseURLOverrides(_ values: [String: String]) -> [String: String] {
+        values.reduce(into: [String: String]()) { partialResult, pair in
+            let providerID = pair.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sanitizedValue = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !providerID.isEmpty, !sanitizedValue.isEmpty else { return }
+            guard ModelRepository.shared.isBuiltIn(providerID) else { return }
+            partialResult[providerID] = sanitizedValue
+        }
+    }
+
     private func updateLaunchAtStartup(_ enabled: Bool) {
         #if os(macOS)
         // Note: SMAppService.mainApp requires the app to be signed with Developer ID
@@ -2289,94 +2356,6 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    // MARK: - Speech Language Mode
-
-    /// User preference for speech recognition language routing.
-    /// `.auto` keeps locale-based language selection. Manual values force the locale used
-    /// by system speech providers for users who want deterministic behavior.
-    enum SpeechLanguageMode: String, CaseIterable, Identifiable, Codable {
-        case auto
-        case english
-        case chineseSimplified
-        case chineseTraditional
-        case japanese
-        case korean
-        case french
-        case german
-        case spanish
-        case italian
-        case portuguese
-        case russian
-
-        var id: String { self.rawValue }
-
-        var isAutomatic: Bool {
-            self == .auto
-        }
-
-        var displayName: String {
-            switch self {
-            case .auto:
-                return "Auto"
-            case .english:
-                return "English (en)"
-            case .chineseSimplified:
-                return "Chinese (简体)"
-            case .chineseTraditional:
-                return "Chinese (繁體)"
-            case .japanese:
-                return "Japanese (ja)"
-            case .korean:
-                return "Korean (ko)"
-            case .french:
-                return "French (fr)"
-            case .german:
-                return "German (de)"
-            case .spanish:
-                return "Spanish (es)"
-            case .italian:
-                return "Italian (it)"
-            case .portuguese:
-                return "Portuguese (pt)"
-            case .russian:
-                return "Russian (ru)"
-            }
-        }
-
-        var localeCandidates: [String] {
-            if self == .auto {
-                return []
-            }
-
-            switch self {
-            case .english:
-                return ["en-US", "en-GB", "en"]
-            case .chineseSimplified:
-                return ["zh-Hans", "zh-Hans-CN", "zh-Hans-HK", "zh"]
-            case .chineseTraditional:
-                return ["zh-Hant", "zh-Hant-TW", "zh-Hant-HK", "zh"]
-            case .japanese:
-                return ["ja-JP", "ja"]
-            case .korean:
-                return ["ko-KR", "ko"]
-            case .french:
-                return ["fr-FR", "fr-CA", "fr"]
-            case .german:
-                return ["de-DE", "de-AT", "de-CH", "de"]
-            case .spanish:
-                return ["es-ES", "es-MX", "es"]
-            case .italian:
-                return ["it-IT", "it"]
-            case .portuguese:
-                return ["pt-BR", "pt-PT", "pt"]
-            case .russian:
-                return ["ru-RU", "ru"]
-            default:
-                return []
-            }
-        }
-    }
-
     // MARK: - Transcription Provider (ASR)
 
     /// Available transcription providers
@@ -2436,6 +2415,8 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // MARK: - Speech Language Mode
+
     /// Selected speech language mode for recognition.
     /// `auto` keeps current language-aware behavior and locale fallback.
     /// Manual modes force the provider locale selection for Apple Speech engines.
@@ -2479,6 +2460,97 @@ final class SettingsStore: ObservableObject {
 }
 
 extension SettingsStore {
+    /// User preference for speech recognition language routing.
+    /// `.auto` keeps locale-based language selection. Manual values force the locale used
+    /// by system speech providers for users who want deterministic behavior.
+    enum SpeechLanguageMode: String, CaseIterable, Identifiable, Codable {
+        case auto
+        case chineseEnglishMixed
+        case english
+        case chineseSimplified
+        case chineseTraditional
+        case japanese
+        case korean
+        case french
+        case german
+        case spanish
+        case italian
+        case portuguese
+        case russian
+
+        var id: String { self.rawValue }
+
+        var isAutomatic: Bool {
+            self == .auto
+        }
+
+        var displayName: String {
+            switch self {
+            case .auto:
+                return "Auto"
+            case .chineseEnglishMixed:
+                return "中文 + English (Mixed)"
+            case .english:
+                return "English (en)"
+            case .chineseSimplified:
+                return "Chinese (简体)"
+            case .chineseTraditional:
+                return "Chinese (繁體)"
+            case .japanese:
+                return "Japanese (ja)"
+            case .korean:
+                return "Korean (ko)"
+            case .french:
+                return "French (fr)"
+            case .german:
+                return "German (de)"
+            case .spanish:
+                return "Spanish (es)"
+            case .italian:
+                return "Italian (it)"
+            case .portuguese:
+                return "Portuguese (pt)"
+            case .russian:
+                return "Russian (ru)"
+            }
+        }
+
+        var localeCandidates: [String] {
+            if self == .auto {
+                return []
+            }
+
+            switch self {
+            case .chineseEnglishMixed:
+                return []
+            case .english:
+                return ["en-US", "en-GB", "en"]
+            case .chineseSimplified:
+                return ["zh-Hans", "zh-Hans-CN", "zh-Hans-HK", "zh"]
+            case .chineseTraditional:
+                return ["zh-Hant", "zh-Hant-TW", "zh-Hant-HK", "zh"]
+            case .japanese:
+                return ["ja-JP", "ja"]
+            case .korean:
+                return ["ko-KR", "ko"]
+            case .french:
+                return ["fr-FR", "fr-CA", "fr"]
+            case .german:
+                return ["de-DE", "de-AT", "de-CH", "de"]
+            case .spanish:
+                return ["es-ES", "es-MX", "es"]
+            case .italian:
+                return ["it-IT", "it"]
+            case .portuguese:
+                return ["pt-BR", "pt-PT", "pt"]
+            case .russian:
+                return ["ru-RU", "ru"]
+            default:
+                return []
+            }
+        }
+    }
+
     /// Available Whisper model sizes
     enum WhisperModelSize: String, CaseIterable, Identifiable {
         case medium = "ggml-medium.bin"
@@ -2514,6 +2586,15 @@ extension SettingsStore {
     }
 
     private func normalizedSpeechModel(_ model: SpeechModel) -> SpeechModel {
+        if self.speechLanguageMode == .chineseEnglishMixed {
+            if model.isWhisperModel {
+                return model
+            }
+            if SpeechModel.availableModels.contains(.whisperMedium) {
+                return .whisperMedium
+            }
+        }
+
         guard self.speechLanguageMode.isAutomatic else { return model }
         if Self.isChineseLocale && !model.supportsChinese {
             if #available(macOS 26.0, *) {

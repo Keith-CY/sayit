@@ -1325,36 +1325,29 @@ struct ContentView: View {
 
     // MARK: - Modular AI Processing
 
-    private func processTextWithAI(_ inputText: String, overrideSystemPrompt: String? = nil) async -> String {
+    private enum AITextProcessingResult {
+        case success(String)
+        case failure(String)
+    }
+
+    private func processTextWithAI(
+        _ inputText: String,
+        overrideSystemPrompt: String? = nil
+    ) async -> AITextProcessingResult {
         // CRITICAL FIX: Read current settings from SettingsStore, not stale @State copies
         // This ensures AI provider/model changes in AISettingsView take effect immediately
-        let currentSelectedProviderID = SettingsStore.shared.selectedProviderID
-        let storedProviderAPIKeys = SettingsStore.shared.providerAPIKeys
-        let storedSelectedModelByProvider = SettingsStore.shared.selectedModelByProvider
-        let storedSavedProviders = SettingsStore.shared.savedProviders
+        let settings = SettingsStore.shared
+        let currentSelectedProviderID = settings.selectedProviderID
+        let storedSelectedModelByProvider = settings.selectedModelByProvider
+        let storedSavedProviders = settings.savedProviders
 
         // Derive currentProvider and openAIBaseURL from the current settings
-        let derivedCurrentProvider: String
-        let derivedBaseURL: String
-        let derivedSelectedModel: String
-
-        // Get provider info
-        if let saved = storedSavedProviders.first(where: { $0.id == currentSelectedProviderID }) {
-            // Saved/custom provider
-            derivedCurrentProvider = "custom:\(saved.id)"
-            derivedBaseURL = saved.baseURL
-            derivedSelectedModel = storedSelectedModelByProvider[derivedCurrentProvider] ?? saved.models.first ?? ""
-        } else if ModelRepository.shared.isBuiltIn(currentSelectedProviderID) {
-            // Built-in provider (openai, groq, cerebras, google, openrouter, ollama, lmstudio)
-            derivedCurrentProvider = currentSelectedProviderID
-            derivedBaseURL = ModelRepository.shared.defaultBaseURL(for: currentSelectedProviderID)
-            derivedSelectedModel = storedSelectedModelByProvider[currentSelectedProviderID] ?? ModelRepository.shared.defaultModels(for: currentSelectedProviderID).first ?? ""
-        } else {
-            // Unknown provider - fallback to OpenAI
-            derivedCurrentProvider = currentSelectedProviderID
-            derivedBaseURL = ModelRepository.shared.defaultBaseURL(for: "openai")
-            derivedSelectedModel = storedSelectedModelByProvider[currentSelectedProviderID] ?? ""
-        }
+        let derivedCurrentProvider = self.providerKey(for: currentSelectedProviderID)
+        let derivedBaseURL = settings.baseURL(for: currentSelectedProviderID)
+        let derivedSelectedModel = storedSelectedModelByProvider[derivedCurrentProvider]
+            ?? storedSavedProviders.first(where: { $0.id == currentSelectedProviderID })?.models.first
+            ?? ModelRepository.shared.defaultModels(for: currentSelectedProviderID).first
+            ?? ""
 
         DebugLogger.shared.debug("processTextWithAI using provider=\(derivedCurrentProvider), model=\(derivedSelectedModel)", source: "ContentView")
 
@@ -1381,23 +1374,43 @@ struct ContentView: View {
                     self.logDictationPromptTrace("Selected context text", value: "<none (dictation mode)>")
                 }
                 DebugLogger.shared.debug("Using Apple Intelligence for transcription cleanup", source: "ContentView")
-                let output = await provider.process(systemPrompt: systemPrompt, userText: inputText)
-                if self.shouldTracePromptProcessing {
-                    self.logDictationPromptTrace("Model answer (A)", value: output)
+                do {
+                    let output = try await provider.process(systemPrompt: systemPrompt, userText: inputText)
+                    let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmedOutput.isEmpty else {
+                        return .failure("Apple Intelligence returned no text.")
+                    }
+                    if self.shouldTracePromptProcessing {
+                        self.logDictationPromptTrace("Model answer (A)", value: output)
+                    }
+                    return .success(output)
+                } catch {
+                    DebugLogger.shared.error(
+                        "Apple Intelligence error: \(error.localizedDescription)",
+                        source: "ContentView"
+                    )
+                    return .failure(error.localizedDescription)
                 }
-                return output
             }
             #endif
-            return inputText // Fallback if not available
+            return .failure(AppleIntelligenceService.unavailabilityReason ?? "Apple Intelligence is unavailable.")
+        }
+
+        guard !derivedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure("Base URL not set for \(ModelRepository.shared.displayName(for: currentSelectedProviderID)). Configure it in AI Settings.")
+        }
+
+        guard !derivedSelectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure("No model selected for \(ModelRepository.shared.displayName(for: currentSelectedProviderID)).")
         }
 
         // Skip API key validation for local endpoints
         let isLocal = self.isLocalEndpoint(derivedBaseURL)
-        let apiKey = storedProviderAPIKeys[derivedCurrentProvider] ?? ""
+        let apiKey = settings.getAPIKey(for: currentSelectedProviderID) ?? ""
 
         if !isLocal {
             guard !apiKey.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
-                return "Error: API Key not set for \(derivedCurrentProvider)"
+                return .failure("API Key not set for \(derivedCurrentProvider).")
             }
         }
 
@@ -1475,8 +1488,9 @@ struct ContentView: View {
             apiKey: apiKey,
             streaming: enableStreaming,
             tools: [],
-            temperature: isReasoningModel ? nil : 0.2,
-            extraParameters: extraParams
+            temperature: isReasoningModel ? nil : 0.0,
+            extraParameters: extraParams,
+            providerID: currentSelectedProviderID
         )
 
         DebugLogger.shared.info("Using LLMClient for transcription (streaming=\(enableStreaming))", source: "ContentView")
@@ -1496,10 +1510,13 @@ struct ContentView: View {
                 self.logDictationPromptTrace("Model answer (A)", value: response.content)
             }
 
-            return response.content.isEmpty ? "<no content>" : response.content
+            guard !response.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .failure("The selected model returned no text.")
+            }
+            return .success(response.content)
         } catch {
             DebugLogger.shared.error("AI API error: \(error.localizedDescription)", source: "ContentView")
-            return "Error: \(error.localizedDescription)"
+            return .failure(error.localizedDescription)
         }
     }
 
@@ -1568,9 +1585,16 @@ struct ContentView: View {
                 promptTest.isProcessing = false
             }
 
-            let result = await self.processTextWithAI(transcribedText, overrideSystemPrompt: promptTest.draftPromptText)
-            let finalText = ASRService.applyGAAVFormatting(result)
-            promptTest.lastOutputText = finalText
+            let result = await self.processTextWithAI(
+                transcribedText,
+                overrideSystemPrompt: promptTest.draftPromptText
+            )
+            switch result {
+            case let .success(output):
+                promptTest.lastOutputText = ASRService.applyGAAVFormatting(output)
+            case let .failure(message):
+                promptTest.lastError = message
+            }
             return
         }
 
@@ -1618,7 +1642,16 @@ struct ContentView: View {
             // Ensure the status label becomes visible immediately.
             await Task.yield()
 
-            finalText = await self.processTextWithAI(transcribedText)
+            switch await self.processTextWithAI(transcribedText) {
+            case let .success(output):
+                finalText = output
+            case let .failure(message):
+                DebugLogger.shared.warning(
+                    "AI cleanup failed; using the original transcription: \(message)",
+                    source: "ContentView"
+                )
+                finalText = transcribedText
+            }
 
             // Clear transient status text before leaving processing state to avoid
             // a brief non-shimmer "Refining..." preview flash.
@@ -1845,7 +1878,15 @@ struct ContentView: View {
         var finalText = transcribedText
         let shouldUseAI = DictationAIPostProcessingGate.isConfigured()
         if shouldUseAI {
-            finalText = await self.processTextWithAI(transcribedText)
+            switch await self.processTextWithAI(transcribedText) {
+            case let .success(output):
+                finalText = output
+            case let .failure(message):
+                DebugLogger.shared.warning(
+                    "AI reprocessing failed; using the original transcription: \(message)",
+                    source: "ContentView"
+                )
+            }
         }
 
         NotchOverlayManager.shared.updateTranscriptionText("")
@@ -2180,7 +2221,14 @@ struct ContentView: View {
         defer { Task { await MainActor.run { isCallingAI = false } } }
 
         let result = await processTextWithAI(aiInputText)
-        await MainActor.run { self.aiOutputText = result }
+        await MainActor.run {
+            switch result {
+            case let .success(output):
+                self.aiOutputText = output
+            case let .failure(message):
+                self.aiOutputText = "Error: \(message)"
+            }
+        }
     }
 
     private func getModelStatusText() -> String {

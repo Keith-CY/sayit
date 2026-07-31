@@ -4,6 +4,7 @@ import Foundation
 
 enum LLMError: Error, LocalizedError {
     case invalidURL
+    case missingBaseURL(String)
     case invalidResponse
     case httpError(Int, String)
     case networkError(Error)
@@ -14,6 +15,8 @@ enum LLMError: Error, LocalizedError {
         switch self {
         case .invalidURL:
             return "Invalid URL"
+        case let .missingBaseURL(providerID):
+            return "Base URL is required for provider '\(providerID)'"
         case .invalidResponse:
             return "Invalid response from LLM"
         case let .httpError(code, message):
@@ -84,9 +87,10 @@ final class LLMClient {
         let model: String
         let baseURL: String
         let apiKey: String
-        let streaming: Bool
+        var streaming: Bool
         let tools: [[String: Any]]
         let temperature: Double?
+        let providerID: String?
 
         /// Optional token limit (max_tokens or max_completion_tokens depending on model)
         var maxTokens: Int?
@@ -118,7 +122,8 @@ final class LLMClient {
             tools: [[String: Any]] = [],
             temperature: Double? = nil,
             maxTokens: Int? = nil,
-            extraParameters: [String: Any] = [:]
+            extraParameters: [String: Any] = [:],
+            providerID: String? = nil
         ) {
             self.messages = messages
             self.model = model
@@ -127,6 +132,7 @@ final class LLMClient {
             self.streaming = streaming
             self.tools = tools
             self.temperature = temperature
+            self.providerID = providerID
             self.maxTokens = maxTokens
             self.extraParameters = extraParameters
         }
@@ -150,13 +156,31 @@ final class LLMClient {
         // than racing a separate "timeout task". A task-group timeout wrapper can accidentally
         // keep the caller suspended until the full timeout elapses, which is the exact stall
         // we want to eliminate for overlay responsiveness.
-        return try await self.executeWithRetry(request: request, config: config)
+        do {
+            return try await self.executeWithRetry(request: request, config: config)
+        } catch {
+            guard config.streaming, self.shouldRetryWithoutStreaming(for: error) else {
+                throw error
+            }
+
+            DebugLogger.shared.warning(
+                "LLMClient: Streaming response incompatible; retrying request in non-streaming mode.",
+                source: "LLMClient"
+            )
+
+            let fallbackConfig = self.nonStreamingConfig(from: config)
+            var fallbackRequest = try self.buildRequest(fallbackConfig)
+            fallbackRequest.timeoutInterval = timeout
+            self.logRequest(fallbackRequest)
+            return try await self.executeWithRetry(request: fallbackRequest, config: fallbackConfig)
+        }
     }
 
     /// Execute request with retry logic (extracted for timeout wrapper)
     private func executeWithRetry(request: URLRequest, config: Config) async throws -> Response {
         var lastError: Error?
-        for attempt in 1...config.maxRetries {
+        let maxAttempts = max(1, config.maxRetries)
+        for attempt in 1...maxAttempts {
             do {
                 if config.streaming {
                     return try await self.processStreaming(request: request, config: config)
@@ -165,8 +189,8 @@ final class LLMClient {
                 }
             } catch let error as URLError where self.isRetryableError(error) {
                 lastError = error
-                DebugLogger.shared.warning("LLMClient: Retry \(attempt)/\(config.maxRetries) due to \(error.code.rawValue)", source: "LLMClient")
-                if attempt < config.maxRetries {
+                DebugLogger.shared.warning("LLMClient: Retry \(attempt)/\(maxAttempts) due to \(error.code.rawValue)", source: "LLMClient")
+                if attempt < maxAttempts {
                     // Exponential backoff
                     let delayNs = UInt64(config.retryDelayMs * 1_000_000 * attempt)
                     try? await Task.sleep(nanoseconds: delayNs)
@@ -187,22 +211,14 @@ final class LLMClient {
     private func buildRequest(_ config: Config) throws -> URLRequest {
         // Build endpoint URL
         let baseURL = config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let endpoint: String
-        if baseURL.contains("/chat/completions") ||
-            baseURL.contains("/api/chat") ||
-            baseURL.contains("/api/generate")
-        {
-            endpoint = baseURL
-        } else {
-            endpoint = baseURL.isEmpty ? "\(ModelRepository.shared.defaultBaseURL(for: "openai"))/chat/completions" : "\(baseURL)/chat/completions"
+        guard !baseURL.isEmpty else {
+            throw LLMError.missingBaseURL(config.providerID ?? "selected-provider")
         }
+        let endpoint = ModelRepository.shared.chatCompletionsEndpoint(for: baseURL)
 
         guard let url = URL(string: endpoint) else {
             throw LLMError.invalidURL
         }
-
-        // Detect if this is a local endpoint (skip auth for local)
-        let isLocal = self.isLocalEndpoint(baseURL)
 
         // Build request body
         var body: [String: Any] = [
@@ -267,9 +283,10 @@ final class LLMClient {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Only add Authorization header for non-local endpoints
-        if !isLocal && !config.apiKey.isEmpty {
-            request.addValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        // Local servers often need no key, but authenticated LAN proxies are supported.
+        let apiKey = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !apiKey.isEmpty {
+            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
         request.httpBody = jsonData
@@ -331,26 +348,52 @@ final class LLMClient {
         var toolCallId: String?
         var toolCallName: String?
         var toolCallArguments = ""
+        var sawPayload = false
 
-        // Process SSE lines
+        // Process stream lines (SSE `data:` and raw JSONL)
         for try await rawLine in bytes.lines {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            guard line.hasPrefix("data:") else { continue }
+            guard !line.isEmpty else { continue }
 
-            var jsonString = String(line.dropFirst(5))
-            if jsonString.hasPrefix(" ") {
-                jsonString = String(jsonString.dropFirst(1))
-            }
-
-            if jsonString.trimmingCharacters(in: .whitespaces) == "[DONE]" {
+            var jsonString: String
+            if line.hasPrefix("data:") {
+                jsonString = String(line.dropFirst(5))
+                if jsonString.hasPrefix(" ") {
+                    jsonString = String(jsonString.dropFirst(1))
+                }
+                if jsonString.trimmingCharacters(in: .whitespacesAndNewlines) == "[DONE]" {
+                    continue
+                }
+            } else if line.hasPrefix("{") {
+                jsonString = line
+            } else {
                 continue
             }
 
             guard let jsonData = jsonString.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
                   let choices = json["choices"] as? [[String: Any]],
-                  let delta = choices.first?["delta"] as? [String: Any]
+                  let choice = choices.first
             else {
+                continue
+            }
+            sawPayload = true
+
+            // Some providers ignore `stream=true` and return a full non-stream message payload.
+            if let message = choice["message"] as? [String: Any] {
+                let parsed = self.parseMessageResponse(message)
+                if let thinking = parsed.thinking, !thinking.isEmpty {
+                    config.onThinkingStart?()
+                    config.onThinkingChunk?(thinking)
+                    config.onThinkingEnd?()
+                }
+                if !parsed.content.isEmpty {
+                    config.onContentChunk?(parsed.content)
+                }
+                return parsed
+            }
+
+            guard let delta = choice["delta"] as? [String: Any] else {
                 continue
             }
 
@@ -480,6 +523,10 @@ final class LLMClient {
 
         DebugLogger.shared.debug("LLMClient: Returning response. Content length: \(contentText.count), Has thinking: \(thinkingText.isEmpty ? "No" : "Yes (\(thinkingText.count) chars)")", source: "LLMClient")
 
+        if contentText.isEmpty, thinkingText.isEmpty, parsedToolCalls.isEmpty, !sawPayload {
+            throw LLMError.invalidResponse
+        }
+
         return Response(
             thinking: thinkingText.isEmpty ? nil : thinkingText,
             content: contentText,
@@ -599,45 +646,37 @@ final class LLMClient {
         }
     }
 
-    /// Check if a URL is a local/private endpoint
-    private func isLocalEndpoint(_ urlString: String) -> Bool {
-        guard let url = URL(string: urlString),
-              let host = url.host else { return false }
-
-        let hostLower = host.lowercased()
-
-        // Localhost
-        if hostLower == "localhost" || hostLower == "127.0.0.1" {
+    private func shouldRetryWithoutStreaming(for error: Error) -> Bool {
+        guard let llmError = error as? LLMError else { return false }
+        switch llmError {
+        case .invalidResponse:
             return true
+        case let .httpError(code, message):
+            let lowered = message.lowercased()
+            return (code == 400 || code == 404 || code == 415) &&
+                (lowered.contains("stream") || lowered.contains("sse") || lowered.contains("event"))
+        default:
+            return false
         }
+    }
 
-        // 127.x.x.x
-        if hostLower.hasPrefix("127.") {
-            return true
-        }
-
-        // 10.x.x.x (Private Class A)
-        if hostLower.hasPrefix("10.") {
-            return true
-        }
-
-        // 192.168.x.x (Private Class C)
-        if hostLower.hasPrefix("192.168.") {
-            return true
-        }
-
-        // 172.16.x.x - 172.31.x.x (Private Class B)
-        if hostLower.hasPrefix("172.") {
-            let components = hostLower.split(separator: ".")
-            if components.count >= 2,
-               let secondOctet = Int(components[1]),
-               secondOctet >= 16 && secondOctet <= 31
-            {
-                return true
-            }
-        }
-
-        return false
+    private func nonStreamingConfig(from config: Config) -> Config {
+        var fallback = Config(
+            messages: config.messages,
+            model: config.model,
+            baseURL: config.baseURL,
+            apiKey: config.apiKey,
+            streaming: false,
+            tools: config.tools,
+            temperature: config.temperature,
+            maxTokens: config.maxTokens,
+            extraParameters: config.extraParameters,
+            providerID: config.providerID
+        )
+        fallback.maxRetries = config.maxRetries
+        fallback.retryDelayMs = config.retryDelayMs
+        fallback.timeoutSeconds = config.timeoutSeconds
+        return fallback
     }
 
     // MARK: - Logging Helpers

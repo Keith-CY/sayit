@@ -463,17 +463,10 @@ extension AIEnhancementSettingsView {
     }
 
     private func canFetchModels(for providerID: String) -> Bool {
-        let key = self.viewModel.providerKey(for: providerID)
-        let apiKey = self.viewModel.providerAPIKeys[key] ?? ""
+        let apiKey = self.viewModel.apiKey(for: providerID)
         let hasAPIKey = !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        let baseURL: String
-        if let saved = self.viewModel.savedProviders.first(where: { $0.id == providerID }) {
-            baseURL = saved.baseURL
-        } else {
-            baseURL = ModelRepository.shared.defaultBaseURL(for: providerID)
-        }
-        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = self.viewModel.resolvedBaseURL(for: providerID).trimmingCharacters(in: .whitespacesAndNewlines)
         let isLocal = self.viewModel.isLocalEndpoint(trimmedBaseURL)
 
         return isLocal ? !trimmedBaseURL.isEmpty : (hasAPIKey && !trimmedBaseURL.isEmpty)

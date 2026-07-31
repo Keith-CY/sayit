@@ -458,7 +458,7 @@ extension VoiceEngineSettingsView {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Speech Language")
                     .font(.body)
-                Text("Auto uses current system language; manual lets you force a fixed recognition locale.")
+                Text("Choose a fixed language, system-language routing, or mixed Chinese and English.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -490,7 +490,14 @@ extension VoiceEngineSettingsView {
                 )
             }
 
-            if currentMode.isAutomatic {
+            if currentMode == .chineseEnglishMixed {
+                Text("Mixed mode uses Whisper automatic language recognition so English can remain embedded in Chinese dictation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Whisper Medium (~1.5 GB) is selected automatically unless you already use a larger Whisper model.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if currentMode.isAutomatic {
                 Text("Auto mode: keeps locale-based behavior and Chinese fallback when enabled.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -22,45 +22,6 @@ final class OpenAICompatibleProvider: AIProvider {
     struct ChatChoice: Codable { let index: Int?; let message: ChatChoiceMessage }
     struct ChatResponse: Codable { let choices: [ChatChoice] }
 
-    // Helper function to detect if the endpoint is local
-    private func isLocalEndpoint(_ urlString: String) -> Bool {
-        guard let url = URL(string: urlString),
-              let host = url.host else { return false }
-
-        let hostLower = host.lowercased()
-
-        // Check for localhost variations
-        if hostLower == "localhost" || hostLower == "127.0.0.1" {
-            return true
-        }
-
-        // Check for private IP ranges
-        // 127.x.x.x
-        if hostLower.hasPrefix("127.") {
-            return true
-        }
-        // 10.x.x.x
-        if hostLower.hasPrefix("10.") {
-            return true
-        }
-        // 192.168.x.x
-        if hostLower.hasPrefix("192.168.") {
-            return true
-        }
-        // 172.16.x.x - 172.31.x.x
-        if hostLower.hasPrefix("172.") {
-            let components = hostLower.split(separator: ".")
-            if components.count >= 2,
-               let secondOctet = Int(components[1]),
-               secondOctet >= 16 && secondOctet <= 31
-            {
-                return true
-            }
-        }
-
-        return false
-    }
-
     // Helper function to detect if model is a gpt-oss model (Groq reasoning models)
     private func isGptOssModel(_ modelName: String) -> Bool {
         let modelLower = modelName.lowercased()
@@ -69,24 +30,12 @@ final class OpenAICompatibleProvider: AIProvider {
     }
 
     func process(systemPrompt: String, userText: String, model: String, apiKey: String, baseURL: String, stream: Bool = false) async -> String {
-        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ModelRepository.shared.defaultBaseURL(for: "openai") : baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty else { return "Error: Base URL is required" }
 
-        // Build the full URL - only append /chat/completions if not already present
-        let fullEndpoint: String
-        if endpoint.contains("/chat/completions") ||
-            endpoint.contains("/api/chat") ||
-            endpoint.contains("/api/generate")
-        {
-            // URL already has a complete path, use as-is
-            fullEndpoint = endpoint
-        } else {
-            // Append /chat/completions for OpenAI-compatible endpoints
-            fullEndpoint = endpoint + "/chat/completions"
-        }
+        let fullEndpoint = ModelRepository.shared.chatCompletionsEndpoint(for: endpoint)
 
         guard let url = URL(string: fullEndpoint) else { return "Error: Invalid Base URL" }
-
-        let isLocal = self.isLocalEndpoint(endpoint)
 
         // Check if model is gpt-oss and add reasoning_effort parameter
         let shouldAddReasoningEffort = self.isGptOssModel(model)
@@ -112,9 +61,9 @@ final class OpenAICompatibleProvider: AIProvider {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        // Only add Authorization header for non-local endpoints
-        if !isLocal {
-            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAPIKey.isEmpty {
+            request.addValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         }
 
         request.httpBody = jsonData

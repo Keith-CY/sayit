@@ -10,7 +10,11 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/MrKai77/DynamicNotchKit", from: "1.0.0"),
-        .package(url: "https://github.com/exPHAT/SwiftWhisper.git", branch: "master"),
+        .package(url: "https://github.com/exPHAT/SwiftWhisper.git", from: "1.2.0"),
+        .package(
+            url: "https://github.com/FluidInference/FluidAudio.git",
+            .upToNextMinor(from: "0.12.6")
+        ),
     ],
     targets: [
         .executableTarget(
@@ -18,6 +22,7 @@ let package = Package(
             dependencies: [
                 "DynamicNotchKit",
                 "SwiftWhisper",
+                "FluidAudio",
             ],
             path: "Sources/SayIt",
             resources: [
