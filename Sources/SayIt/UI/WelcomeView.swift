@@ -31,6 +31,58 @@ struct WelcomeView: View {
         self.settings.rewriteModeHotkeyShortcut.displayString
     }
 
+    private var recordingControlAction: RecordingControlAction {
+        RecordingControlPolicy.action(
+            isRunning: self.asr.isRunning,
+            isStarting: self.asr.isStarting,
+            isReady: self.asr.isAsrReady,
+            isPreparingModel: self.asr.isDownloadingModel || self.asr.isLoadingModel,
+            micStatus: self.asr.micStatus
+        )
+    }
+
+    private var recordingButtonTitle: String {
+        switch self.recordingControlAction {
+        case .start:
+            return "Start Recording"
+        case .starting:
+            return "Starting Microphone…"
+        case .stop:
+            return "Stop Recording"
+        case .prepareAndStart:
+            return "Start Recording"
+        case .waitForModel:
+            return "Preparing Voice Model…"
+        case .requestMicrophoneAccess:
+            return "Grant Microphone Access"
+        case .openMicrophoneSettings:
+            return "Open Microphone Settings"
+        case .showMicrophoneRestriction:
+            return "Microphone Access Restricted"
+        }
+    }
+
+    private var recordingButtonIcon: String {
+        switch self.recordingControlAction {
+        case .start:
+            return "mic.fill"
+        case .starting:
+            return "hourglass"
+        case .stop:
+            return "stop.fill"
+        case .prepareAndStart:
+            return "mic.fill"
+        case .waitForModel:
+            return "hourglass"
+        case .requestMicrophoneAccess:
+            return "mic.fill"
+        case .openMicrophoneSettings:
+            return "gear"
+        case .showMicrophoneRestriction:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -60,12 +112,12 @@ struct WelcomeView: View {
                                     ? "Speech recognition model is loaded and ready"
                                     : (self.asr.modelsExistOnDisk
                                         ? "Model downloaded, will load when needed"
-                                        : "Download the AI model for offline voice transcription (~500MB)"),
+                                        : "Download \(self.settings.selectedSpeechModel.displayName) for offline voice transcription (\(self.settings.selectedSpeechModel.downloadSize))"),
                                 status: (self.asr.isAsrReady || self.asr.modelsExistOnDisk) ? .completed : .pending,
                                 action: {
-                                    self.selectedSidebarItem = .aiEnhancements
+                                    self.selectedSidebarItem = .voiceEngine
                                 },
-                                actionButtonTitle: "Go to AI Settings",
+                                actionButtonTitle: "Go to Voice Engine",
                                 showActionButton: !(self.asr.isAsrReady || self.asr.modelsExistOnDisk)
                             )
 
@@ -92,7 +144,7 @@ struct WelcomeView: View {
                                 title: self.accessibilityEnabled ? "Accessibility Enabled" : "Enable Accessibility",
                                 description: self.accessibilityEnabled
                                     ? "Accessibility permission granted for typing into apps"
-                                    : "Grant accessibility permission to type text into other apps",
+                                    : "Enable SayIt to use the global shortcut and type into other apps. After an update, switch SayIt off and on again if it is already listed.",
                                 status: self.accessibilityEnabled ? .completed : .pending,
                                 action: {
                                     self.openAccessibilitySettings()
@@ -347,19 +399,44 @@ struct WelcomeView: View {
                             // Recording Control
                             VStack(spacing: 10) {
                                 Button {
-                                    if self.asr.isRunning {
+                                    switch self.recordingControlAction {
+                                    case .starting:
+                                        break
+                                    case .stop:
                                         Task {
                                             await self.stopAndProcessTranscription()
                                         }
-                                    } else {
+                                    case .start:
                                         self.startRecording()
-                                        self.playgroundUsed = true
-                                        SettingsStore.shared.playgroundUsed = true
+                                    case .prepareAndStart:
+                                        Task {
+                                            do {
+                                                try await self.asr.ensureAsrReady()
+                                                self.startRecording()
+                                            } catch {
+                                                self.asr.errorTitle = "Voice Model Failed to Prepare"
+                                                self.asr.errorMessage = error.localizedDescription
+                                                self.asr.showError = true
+                                            }
+                                        }
+                                    case .waitForModel:
+                                        break
+                                    case .requestMicrophoneAccess:
+                                        self.startRecording()
+                                    case .openMicrophoneSettings:
+                                        self.asr.openSystemSettingsForMic()
+                                    case .showMicrophoneRestriction:
+                                        self.startRecording()
                                     }
                                 } label: {
                                     HStack {
-                                        Image(systemName: self.asr.isRunning ? "stop.fill" : "mic.fill")
-                                        Text(self.asr.isRunning ? "Stop Recording" : "Start Recording")
+                                        if self.recordingControlAction == .starting {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Image(systemName: self.recordingButtonIcon)
+                                        }
+                                        Text(self.recordingButtonTitle)
                                     }
                                     .frame(maxWidth: .infinity)
                                 }
@@ -367,7 +444,10 @@ struct WelcomeView: View {
                                 .buttonHoverEffect()
                                 .scaleEffect(self.asr.isRunning ? 1.02 : 1.0)
                                 .animation(.spring(response: 0.3), value: self.asr.isRunning)
-                                .disabled(!self.asr.isAsrReady && !self.asr.isRunning)
+                                .disabled(
+                                    self.recordingControlAction == .waitForModel
+                                        || self.recordingControlAction == .starting
+                                )
 
                                 if !self.asr.isRunning && !self.asr.finalText.isEmpty {
                                     Button("Clear Results") {
@@ -414,6 +494,14 @@ struct WelcomeView: View {
                                             Text("Transcription will appear when you stop recording")
                                                 .font(.caption)
                                                 .foregroundStyle(self.theme.palette.accent.opacity(0.7))
+                                        } else if self.recordingControlAction == .waitForModel {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                            Text("Preparing the voice model…")
+                                                .font(.subheadline.weight(.medium))
+                                            Text("Recording will be available when preparation completes")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
                                         } else if self.asr.finalText.isEmpty {
                                             Image(systemName: "text.bubble")
                                                 .font(.title2)
@@ -467,6 +555,14 @@ struct WelcomeView: View {
                 // Check if models exist on disk (async for accurate detection with AppleSpeechAnalyzerProvider)
                 await self.asr.checkIfModelsExistAsync()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            self.asr.refreshMicAuthorizationStatus()
+        }
+        .onChange(of: self.asr.isRunning) { _, isRunning in
+            guard isRunning else { return }
+            self.playgroundUsed = true
+            SettingsStore.shared.playgroundUsed = true
         }
     }
 

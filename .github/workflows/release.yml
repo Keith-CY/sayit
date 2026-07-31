@@ -80,7 +80,52 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
 
-      - name: Archive ad-hoc signed app
+      - name: Import persistent GitHub release signing identity
+        id: signing
+        env:
+          SIGNING_CERTIFICATE_P12: ${{ secrets.SAYIT_SIGNING_CERTIFICATE_P12 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.SAYIT_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          test -n "$SIGNING_CERTIFICATE_P12"
+          test -n "$SIGNING_CERTIFICATE_PASSWORD"
+
+          keychain_path="$RUNNER_TEMP/sayit-release-signing.keychain-db"
+          certificate_path="$RUNNER_TEMP/sayit-release-signing.p12"
+          keychain_password="$(openssl rand -hex 24)"
+
+          printf '%s' "$SIGNING_CERTIFICATE_P12" | /usr/bin/base64 -D > "$certificate_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$SIGNING_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path" \
+            >/dev/null
+          security list-keychains -d user -s "$keychain_path"
+
+          certificate_sha="$(
+            security find-certificate \
+              -a \
+              -Z \
+              -c 'SayIt GitHub Release Signing' \
+              "$keychain_path" \
+              | awk '/SHA-1 hash:/ { print $3; exit }'
+          )"
+          test -n "$certificate_sha"
+
+          {
+            echo "certificate_sha=$certificate_sha"
+            echo "keychain_path=$keychain_path"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Archive persistently signed app
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -93,10 +138,10 @@ jobs:
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_IDENTITY="${{ steps.signing.outputs.certificate_sha }}" \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
-            OTHER_CODE_SIGN_FLAGS="--timestamp=none" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp=none --keychain ${{ steps.signing.outputs.keychain_path }}" \
             | xcpretty
 
       - name: Verify and package signed app
@@ -112,9 +157,22 @@ jobs:
 
           signature_details="$(/usr/bin/codesign -d --verbose=4 "$app_path" 2>&1)"
           case "$signature_details" in
-            *"Signature=adhoc"*) ;;
+            *"Authority=SayIt GitHub Release Signing"*) ;;
             *)
-              echo "The release app must use an ad-hoc signature."
+              echo "The release app must use the persistent SayIt signing identity."
+              exit 1
+              ;;
+          esac
+
+          designated_requirement="$(/usr/bin/codesign -d -r- "$app_path" 2>&1)"
+          certificate_sha_lower="$(
+            printf '%s' '${{ steps.signing.outputs.certificate_sha }}' \
+              | tr '[:upper:]' '[:lower:]'
+          )"
+          case "$designated_requirement" in
+            *"certificate root = H\"$certificate_sha_lower\""*) ;;
+            *)
+              echo "The release app does not have the expected stable designated requirement."
               exit 1
               ;;
           esac

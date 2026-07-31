@@ -1,6 +1,30 @@
 import Foundation
 import SwiftWhisper
 
+enum WhisperCoreMLSupport {
+    static func compiledModelDirectoryName(for modelFileName: String) -> String? {
+        guard modelFileName.hasSuffix(".bin") else { return nil }
+        var modelStem = String(modelFileName.dropLast(4))
+        let possibleQuantizationSuffix = modelStem.suffix(5)
+        if possibleQuantizationSuffix.count == 5,
+           possibleQuantizationSuffix.first == "-",
+           possibleQuantizationSuffix.dropFirst().first == "q",
+           possibleQuantizationSuffix[possibleQuantizationSuffix.index(possibleQuantizationSuffix.startIndex, offsetBy: 3)] == "_"
+        {
+            modelStem.removeLast(5)
+        }
+        return "\(modelStem)-encoder.mlmodelc"
+    }
+
+    static func archiveName(for modelFileName: String) -> String? {
+        self.compiledModelDirectoryName(for: modelFileName).map { "\($0).zip" }
+    }
+
+    static func shouldInstallCompanion(isAppleSilicon: Bool, compiledModelExists: Bool) -> Bool {
+        isAppleSilicon && !compiledModelExists
+    }
+}
+
 /// TranscriptionProvider implementation using SwiftWhisper (whisper.cpp) for Intel Macs.
 /// This provides on-device speech recognition that works on Intel x86_64 architecture.
 final class WhisperProvider: TranscriptionProvider {
@@ -61,6 +85,8 @@ final class WhisperProvider: TranscriptionProvider {
 
     private func expectedMinimumModelBytes(for fileName: String) -> Int64? {
         switch fileName {
+        case "ggml-small-q5_1.bin":
+            return 150 * 1024 * 1024
         case "ggml-medium.bin":
             return 1000 * 1024 * 1024
         // case "ggml-large-v3-turbo.bin": // buggy - so removed temporarily
@@ -123,7 +149,10 @@ final class WhisperProvider: TranscriptionProvider {
         // Download model if not present
         if !FileManager.default.fileExists(atPath: self.modelURL.path) {
             DebugLogger.shared.info("WhisperProvider: Downloading Whisper model...", source: "WhisperProvider")
-            try await self.downloadModel(progressHandler: progressHandler)
+            let needsCoreMLCompanion = self.needsCoreMLCompanion(for: currentModelName)
+            try await self.downloadModel(progressHandler: { progress in
+                progressHandler?(needsCoreMLCompanion ? progress * 0.72 : progress)
+            })
         }
 
         guard self.isModelFileValid(at: self.modelURL) else {
@@ -133,6 +162,11 @@ final class WhisperProvider: TranscriptionProvider {
                 userInfo: [NSLocalizedDescriptionKey: "Whisper model file is missing or corrupted. Please re-download the model."]
             )
         }
+
+        await self.installCoreMLCompanionIfNeeded(
+            for: currentModelName,
+            progressHandler: progressHandler
+        )
 
         // Check available memory before loading large models
         // Use the captured targetModel to ensure consistent memory validation
@@ -241,6 +275,16 @@ final class WhisperProvider: TranscriptionProvider {
         if FileManager.default.fileExists(atPath: self.modelURL.path) {
             try FileManager.default.removeItem(at: self.modelURL)
         }
+        if let coreMLModelURL = self.coreMLModelURL(for: self.modelName),
+           FileManager.default.fileExists(atPath: coreMLModelURL.path)
+        {
+            try FileManager.default.removeItem(at: coreMLModelURL)
+        }
+        if let coreMLArchiveURL = self.coreMLArchiveURL(for: self.modelName),
+           FileManager.default.fileExists(atPath: coreMLArchiveURL.path)
+        {
+            try FileManager.default.removeItem(at: coreMLArchiveURL)
+        }
         if FileManager.default.fileExists(atPath: self.modelDirectory.path) {
             let contents = try FileManager.default.contentsOfDirectory(atPath: self.modelDirectory.path)
             if contents.isEmpty {
@@ -253,6 +297,135 @@ final class WhisperProvider: TranscriptionProvider {
     }
 
     // MARK: - Model Download
+
+    private func needsCoreMLCompanion(for modelFileName: String) -> Bool {
+        guard let modelURL = self.coreMLModelURL(for: modelFileName) else { return false }
+        return WhisperCoreMLSupport.shouldInstallCompanion(
+            isAppleSilicon: CPUArchitecture.isAppleSilicon,
+            compiledModelExists: Self.isCoreMLModelValid(at: modelURL)
+        )
+    }
+
+    private func coreMLModelURL(for modelFileName: String) -> URL? {
+        WhisperCoreMLSupport.compiledModelDirectoryName(for: modelFileName).map {
+            self.modelDirectory.appendingPathComponent($0, isDirectory: true)
+        }
+    }
+
+    private func coreMLArchiveURL(for modelFileName: String) -> URL? {
+        WhisperCoreMLSupport.archiveName(for: modelFileName).map {
+            self.modelDirectory.appendingPathComponent($0)
+        }
+    }
+
+    nonisolated private static func isCoreMLModelValid(at url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let contents = try? FileManager.default.contentsOfDirectory(atPath: url.path),
+              !contents.isEmpty
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func installCoreMLCompanionIfNeeded(
+        for modelFileName: String,
+        progressHandler: ((Double) -> Void)?
+    ) async {
+        guard self.needsCoreMLCompanion(for: modelFileName),
+              let archiveName = WhisperCoreMLSupport.archiveName(for: modelFileName),
+              let archiveURL = self.coreMLArchiveURL(for: modelFileName),
+              let compiledModelURL = self.coreMLModelURL(for: modelFileName),
+              let remoteURL = URL(
+                  string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(archiveName)"
+              )
+        else {
+            return
+        }
+
+        DebugLogger.shared.info(
+            "WhisperProvider: Downloading Core ML acceleration model...",
+            source: "WhisperProvider"
+        )
+
+        do {
+            try await self.downloadFile(
+                from: remoteURL,
+                to: archiveURL,
+                progressHandler: { progress in
+                    progressHandler?(0.72 + progress * 0.28)
+                }
+            )
+            try await Self.extractCoreMLArchive(
+                archiveURL: archiveURL,
+                compiledModelURL: compiledModelURL
+            )
+            try? FileManager.default.removeItem(at: archiveURL)
+            progressHandler?(1.0)
+            DebugLogger.shared.info(
+                "WhisperProvider: Core ML acceleration model ready",
+                source: "WhisperProvider"
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: archiveURL)
+            DebugLogger.shared.warning(
+                "WhisperProvider: Core ML acceleration unavailable; continuing with CPU fallback: \(error.localizedDescription)",
+                source: "WhisperProvider"
+            )
+        }
+    }
+
+    nonisolated private static func extractCoreMLArchive(
+        archiveURL: URL,
+        compiledModelURL: URL
+    ) async throws {
+        try await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            let stagingDirectory = compiledModelURL
+                .deletingLastPathComponent()
+                .appendingPathComponent(".coreml-extract-\(UUID().uuidString)", isDirectory: true)
+
+            defer {
+                try? fileManager.removeItem(at: stagingDirectory)
+            }
+
+            try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            process.arguments = ["-x", "-k", archiveURL.path, stagingDirectory.path]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                throw NSError(
+                    domain: "WhisperProvider",
+                    code: -6,
+                    userInfo: [NSLocalizedDescriptionKey: "Could not unpack the Core ML acceleration model."]
+                )
+            }
+
+            let extractedModelURL = stagingDirectory
+                .appendingPathComponent(compiledModelURL.lastPathComponent, isDirectory: true)
+            guard Self.isCoreMLModelValid(at: extractedModelURL) else {
+                throw NSError(
+                    domain: "WhisperProvider",
+                    code: -7,
+                    userInfo: [NSLocalizedDescriptionKey: "The Core ML acceleration model is incomplete."]
+                )
+            }
+
+            if fileManager.fileExists(atPath: compiledModelURL.path) {
+                try fileManager.removeItem(at: compiledModelURL)
+            }
+            try fileManager.moveItem(at: extractedModelURL, to: compiledModelURL)
+        }.value
+    }
 
     private func downloadModel(progressHandler: ((Double) -> Void)?) async throws {
         // Whisper models are hosted on Hugging Face
@@ -325,7 +498,11 @@ final class WhisperProvider: TranscriptionProvider {
 
     private func downloadFile(from url: URL, to destination: URL, progressHandler: ((Double) -> Void)?) async throws {
         let delegate = DownloadProgressDelegate(onProgress: progressHandler)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 5 * 60
+        configuration.timeoutIntervalForResource = 60 * 60
+        configuration.waitsForConnectivity = true
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         let task = session.downloadTask(with: url)
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

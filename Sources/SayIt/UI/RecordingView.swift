@@ -17,6 +17,16 @@ struct RecordingView: View {
     let stopAndProcessTranscription: () async -> Void
     let startRecording: () -> Void
 
+    private var recordingControlAction: RecordingControlAction {
+        RecordingControlPolicy.action(
+            isRunning: self.asr.isRunning,
+            isStarting: self.asr.isStarting,
+            isReady: self.asr.isAsrReady,
+            isPreparingModel: self.asr.isDownloadingModel || self.asr.isLoadingModel,
+            micStatus: self.asr.micStatus
+        )
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 14) {
@@ -45,28 +55,55 @@ struct RecordingView: View {
                             // Status indicator
                             HStack {
                                 Circle()
-                                    .fill(self.asr.isRunning ? .red : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
+                                    .fill(self.asr.isRunning ? .red : self.asr.isStarting ? .orange : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
                                     .frame(width: 8, height: 8)
 
-                                Text(self.asr.isRunning ? "Recording..." : self.asr.isAsrReady ? "Ready to record" : "Model not ready")
+                                Text(self.asr.isRunning ? "Recording..." : self.asr.isStarting ? "Starting microphone…" : self.asr.isAsrReady ? "Ready to record" : "Model not ready")
                                     .font(.subheadline)
-                                    .foregroundStyle(self.asr.isRunning ? .red : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
+                                    .foregroundStyle(self.asr.isRunning ? .red : self.asr.isStarting ? .orange : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
                             }
 
                             // Recording Control (Single Toggle Button)
                             Button(action: {
-                                if self.asr.isRunning {
+                                switch self.recordingControlAction {
+                                case .starting:
+                                    break
+                                case .stop:
                                     Task {
                                         await self.stopAndProcessTranscription()
                                     }
-                                } else {
+                                case .start:
+                                    self.startRecording()
+                                case .prepareAndStart:
+                                    Task {
+                                        do {
+                                            try await self.asr.ensureAsrReady()
+                                            self.startRecording()
+                                        } catch {
+                                            self.asr.errorTitle = "Voice Model Failed to Prepare"
+                                            self.asr.errorMessage = error.localizedDescription
+                                            self.asr.showError = true
+                                        }
+                                    }
+                                case .waitForModel:
+                                    break
+                                case .requestMicrophoneAccess:
+                                    self.startRecording()
+                                case .openMicrophoneSettings:
+                                    self.asr.openSystemSettingsForMic()
+                                case .showMicrophoneRestriction:
                                     self.startRecording()
                                 }
                             }) {
                                 HStack {
-                                    Image(systemName: self.asr.isRunning ? "stop.fill" : "mic.fill")
-                                        .font(.system(size: 16, weight: .semibold))
-                                    Text(self.asr.isRunning ? "Stop Recording" : "Start Recording")
+                                    if self.recordingControlAction == .starting {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else {
+                                        Image(systemName: self.recordingControlAction == .stop ? "stop.fill" : "mic.fill")
+                                            .font(.system(size: 16, weight: .semibold))
+                                    }
+                                    Text(self.recordingButtonTitle)
                                 }
                                 .frame(maxWidth: .infinity)
                             }
@@ -74,7 +111,10 @@ struct RecordingView: View {
                             .buttonHoverEffect()
                             .scaleEffect(self.asr.isRunning ? 1.05 : 1.0)
                             .animation(.spring(response: 0.3), value: self.asr.isRunning)
-                            .disabled(!self.asr.isAsrReady && !self.asr.isRunning)
+                            .disabled(
+                                self.recordingControlAction == .waitForModel
+                                    || self.recordingControlAction == .starting
+                            )
                         }
                     }
                     .padding(14)
@@ -82,6 +122,27 @@ struct RecordingView: View {
                 .modifier(CardAppearAnimation(delay: 0.1, appear: self.$appear))
             }
             .padding(14)
+        }
+    }
+
+    private var recordingButtonTitle: String {
+        switch self.recordingControlAction {
+        case .start:
+            return "Start Recording"
+        case .starting:
+            return "Starting Microphone…"
+        case .stop:
+            return "Stop Recording"
+        case .prepareAndStart:
+            return "Start Recording"
+        case .waitForModel:
+            return "Preparing Voice Model…"
+        case .requestMicrophoneAccess:
+            return "Grant Microphone Access"
+        case .openMicrophoneSettings:
+            return "Open Microphone Settings"
+        case .showMicrophoneRestriction:
+            return "Microphone Access Restricted"
         }
     }
 }

@@ -10,27 +10,33 @@ Every release uses:
 
 - A stable Sparkle EdDSA key that signs the update archive and the complete
   `appcast.xml`.
-- An ad-hoc macOS code signature that seals the app and its embedded Sparkle
-  components against accidental packaging corruption.
+- A stable self-signed macOS code-signing identity named
+  `SayIt GitHub Release Signing` that seals the app and its embedded Sparkle
+  components and keeps the app's designated requirement stable between builds.
 
 The public EdDSA key is embedded in `Info.plist`. It is the update chain's
-identity and authenticity check. Sparkle accepts a valid archive signature even
-though each ad-hoc app signature has a different designated requirement.
+authenticity check. The stable macOS signing identity lets macOS associate
+updates with the same app, so privacy grants such as Microphone and
+Accessibility can survive an in-place update.
 
 This protects the update path from a replaced archive or feed, but it does not
-make the app notarized or give it an Apple-issued identity. The first
-installation must therefore be approved manually in macOS. Once 1.6.0 or later
-is installed, Sparkle can update it in place.
+make the self-signed certificate Apple-trusted, notarize the app, or provide a
+Developer ID identity. The first installation must therefore be approved
+manually in macOS. Once 1.6.1 or later is installed, Sparkle can update it in
+place while retaining the same local code identity.
 
 ## Required GitHub secrets
 
-The repository requires one Actions secret:
+The repository requires three Actions secrets:
 
 - `SPARKLE_EDDSA_PRIVATE_KEY`
+- `SAYIT_SIGNING_CERTIFICATE_P12` (the signing identity exported as a `.p12`
+  and base64-encoded)
+- `SAYIT_SIGNING_CERTIFICATE_PASSWORD`
 
-Never print, commit, or attach this value to an issue or release. GitHub secrets
-cannot be downloaded later, so keep a separate encrypted offline backup of the
-EdDSA private key.
+Never print, commit, or attach these values to an issue or release. GitHub
+secrets cannot be downloaded later, so keep separate encrypted offline backups
+of both the EdDSA private key and the signing identity.
 
 The EdDSA Keychain account used on the maintainer Mac is
 `com.sayit.github-updates`.
@@ -49,12 +55,13 @@ The `Publish GitHub Release` workflow then:
 
 1. Verifies the tag and bundle versions match.
 2. Runs lint and tests.
-3. Archives an Apple-silicon Release build using an ad-hoc signature.
-4. Verifies the complete nested code signature and confirms the app is ad-hoc
-   signed.
-5. Creates `SayIt-v<version>-arm64.zip`.
-6. Generates and verifies a signed Sparkle `appcast.xml`.
-7. Publishes both files in the GitHub Release.
+3. Imports the stable self-signed identity into an ephemeral CI keychain.
+4. Archives an Apple-silicon Release build with that identity.
+5. Verifies the complete nested code signature and stable designated
+   requirement.
+6. Creates `SayIt-v<version>-arm64.zip`.
+7. Generates and verifies a signed Sparkle `appcast.xml`.
+8. Publishes both files in the GitHub Release.
 
 The stable in-app feed URL is:
 
@@ -66,14 +73,18 @@ supported update chain.
 
 ## First release and recovery
 
-Version 1.6.0 is the bootstrap release. Older builds do not contain Sparkle, so
-install 1.6.0 manually from GitHub Releases. Validate the next release by
-updating from 1.6.0 through the app before calling the chain production-ready.
+Version 1.6.0 introduced Sparkle. Version 1.6.1 introduces the stable macOS code
+identity. A 1.6.0 installation can update through Sparkle, but users may need to
+approve privacy permissions once more after that identity transition. Fresh
+installs should start with 1.6.1 or later. Validate the next release by updating
+from 1.6.1 through the app and confirming that privacy permissions persist
+before calling the chain production-ready.
 
-Do not casually rotate the EdDSA identity. Losing or replacing the private key
-requires a manual reinstall with a build containing a new public key. Because
-there is no Developer ID signature as a fallback, keep more than one encrypted
-offline backup.
+Do not casually rotate either identity. Losing or replacing the EdDSA private
+key requires a manual reinstall with a build containing a new public key.
+Replacing the macOS signing identity can also require users to re-approve
+privacy permissions. Because there is no Developer ID signature as a fallback,
+keep more than one encrypted offline backup of both identities.
 
 If the update feed is temporarily unavailable, the installed app continues to
 work. Users can always use **View Releases** and install a verified manual

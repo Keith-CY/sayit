@@ -134,6 +134,12 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
                 })
 
                 DebugLogger.shared.info("Model download completed: \(model.displayName)", source: "VoiceEngineVM")
+
+                if self.settings.selectedSpeechModel == model {
+                    self.asr.resetTranscriptionProvider()
+                    try await self.asr.ensureAsrReady()
+                    DebugLogger.shared.info("Downloaded active model is ready", source: "VoiceEngineVM")
+                }
             } catch {
                 DebugLogger.shared.error("Failed to download model \(model.displayName): \(error)", source: "VoiceEngineVM")
                 await MainActor.run {

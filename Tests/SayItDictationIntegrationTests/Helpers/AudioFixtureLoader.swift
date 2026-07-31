@@ -23,6 +23,11 @@ enum AudioFixtureLoader {
             throw LoaderError.fixtureNotFound(name: name, ext: ext)
         }
 
+        return try self.load16kMonoFloatSamples(from: url)
+    }
+
+    /// Loads an audio file at an explicit URL and converts it to 16kHz mono Float32 samples.
+    static func load16kMonoFloatSamples(from url: URL) throws -> [Float] {
         let inputFile = try AVAudioFile(forReading: url)
         let inputFormat = inputFile.processingFormat
 
