@@ -2294,7 +2294,14 @@ struct ContentView: View {
 
     private func openAccessibilitySettings() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+        AccessibilityPermissionAction.perform(
+            prompt: {
+                _ = AXIsProcessTrustedWithOptions(options)
+            },
+            openSettings: { url in
+                _ = NSWorkspace.shared.open(url)
+            }
+        )
         self.didOpenAccessibilityPane = true
         UserDefaults.standard.set(true, forKey: self.accessibilityRestartFlagKey)
     }

@@ -364,6 +364,23 @@ final class DictationE2ETests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testAccessibilityPermissionActionPromptsAndOpensSystemSettings() {
+        var didPrompt = false
+        var openedURL: URL?
+
+        AccessibilityPermissionAction.perform(
+            prompt: { didPrompt = true },
+            openSettings: { openedURL = $0 }
+        )
+
+        XCTAssertTrue(didPrompt)
+        XCTAssertEqual(
+            openedURL?.absoluteString,
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        )
+    }
+
     func testDefaultDictationPrompt_preservesMixedLanguages() {
         let prompt = SettingsStore.baseDictationPromptText().lowercased()
 

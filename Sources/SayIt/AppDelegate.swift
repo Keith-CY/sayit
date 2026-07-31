@@ -95,10 +95,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // If still not trusted shortly after, deep-link to the Accessibility pane for convenience
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             guard !AXIsProcessTrusted(),
-                  let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                  let url = AccessibilityPermissionAction.settingsURL
             else { return }
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+enum AccessibilityPermissionAction {
+    static let settingsURL = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+    )
+
+    static func perform(
+        prompt: () -> Void,
+        openSettings: (URL) -> Void
+    ) {
+        prompt()
+        guard let settingsURL else { return }
+        openSettings(settingsURL)
     }
 }
 
