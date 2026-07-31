@@ -280,6 +280,46 @@ final class DictationE2ETests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testRecordingControlShowsRequiredMicrophoneActionBeforeStarting() {
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: false,
+                isReady: true,
+                isPreparingModel: false,
+                micStatus: .notDetermined
+            ),
+            .requestMicrophoneAccess
+        )
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: false,
+                isReady: true,
+                isPreparingModel: false,
+                micStatus: .denied
+            ),
+            .openMicrophoneSettings
+        )
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: false,
+                isReady: true,
+                isPreparingModel: false,
+                micStatus: .restricted
+            ),
+            .showMicrophoneRestriction
+        )
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: true,
+                isReady: true,
+                isPreparingModel: false,
+                micStatus: .denied
+            ),
+            .stop
+        )
+    }
+
     func testAccessibilityPromptCooldownDoesNotSuppressNewBuild() {
         let now: TimeInterval = 10_000
         let lastPromptAt: TimeInterval = 9_900
@@ -531,6 +571,13 @@ final class DictationE2ETests: XCTestCase {
 
         let response = try await LLMClient.shared.call(config)
 
+        XCTAssertTrue(
+            response.content.unicodeScalars.contains(where: {
+                (0x4E00 ... 0x9FFF).contains(Int($0.value))
+            }),
+            "Expected surrounding Chinese to be preserved. Got: \(response.content)"
+        )
+        XCTAssertFalse(response.content.contains("呃"), "Expected Chinese filler word '呃' to be removed. Got: \(response.content)")
         XCTAssertTrue(response.content.contains("review"), "Expected English word 'review' to be preserved. Got: \(response.content)")
         XCTAssertTrue(response.content.contains("pull request"), "Expected English phrase 'pull request' to be preserved. Got: \(response.content)")
         XCTAssertTrue(response.content.contains("deploy"), "Expected English word 'deploy' to be preserved. Got: \(response.content)")

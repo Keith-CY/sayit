@@ -35,7 +35,8 @@ struct WelcomeView: View {
         RecordingControlPolicy.action(
             isRunning: self.asr.isRunning,
             isReady: self.asr.isAsrReady,
-            isPreparingModel: self.asr.isDownloadingModel || self.asr.isLoadingModel
+            isPreparingModel: self.asr.isDownloadingModel || self.asr.isLoadingModel,
+            micStatus: self.asr.micStatus
         )
     }
 
@@ -49,6 +50,12 @@ struct WelcomeView: View {
             return "Start Recording"
         case .waitForModel:
             return "Preparing Voice Model…"
+        case .requestMicrophoneAccess:
+            return "Grant Microphone Access"
+        case .openMicrophoneSettings:
+            return "Open Microphone Settings"
+        case .showMicrophoneRestriction:
+            return "Microphone Access Restricted"
         }
     }
 
@@ -62,6 +69,12 @@ struct WelcomeView: View {
             return "mic.fill"
         case .waitForModel:
             return "hourglass"
+        case .requestMicrophoneAccess:
+            return "mic.fill"
+        case .openMicrophoneSettings:
+            return "gear"
+        case .showMicrophoneRestriction:
+            return "exclamationmark.triangle.fill"
         }
     }
 
@@ -401,6 +414,12 @@ struct WelcomeView: View {
                                         }
                                     case .waitForModel:
                                         break
+                                    case .requestMicrophoneAccess:
+                                        self.startRecording()
+                                    case .openMicrophoneSettings:
+                                        self.asr.openSystemSettingsForMic()
+                                    case .showMicrophoneRestriction:
+                                        self.startRecording()
                                     }
                                 } label: {
                                     HStack {

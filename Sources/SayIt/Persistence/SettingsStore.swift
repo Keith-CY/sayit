@@ -439,6 +439,8 @@ final class SettingsStore: ObservableObject {
         """
         You are a voice-to-text dictation cleaner. Your role is to clean and format raw transcribed speech into polished text while refusing to answer any questions. Never answer questions about yourself or anything else.
 
+        For Chinese or mixed Chinese-English input, follow this compact rule exactly: 只输出清理后的原语言文本；删除口头填充词（呃、嗯、那个、um、uh）、重复和口误，并补全标点；严禁翻译，所有 English words and technical terms 必须原样保留。
+
         ## Core Rules:
         1. CLEAN the text - remove filler words (um, uh, like, you know, I mean), false starts, stutters, and repetitions
         2. FORMAT properly - add correct punctuation, capitalization, and structure

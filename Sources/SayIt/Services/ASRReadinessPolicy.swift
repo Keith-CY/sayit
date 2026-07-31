@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 enum ASRStartupPolicy {
@@ -17,17 +18,35 @@ enum RecordingControlAction: Equatable {
     case stop
     case prepareAndStart
     case waitForModel
+    case requestMicrophoneAccess
+    case openMicrophoneSettings
+    case showMicrophoneRestriction
 }
 
 enum RecordingControlPolicy {
     static func action(
         isRunning: Bool,
         isReady: Bool,
-        isPreparingModel: Bool
+        isPreparingModel: Bool,
+        micStatus: AVAuthorizationStatus = .authorized
     ) -> RecordingControlAction {
         if isRunning {
             return .stop
         }
+
+        switch micStatus {
+        case .authorized:
+            break
+        case .notDetermined:
+            return .requestMicrophoneAccess
+        case .denied:
+            return .openMicrophoneSettings
+        case .restricted:
+            return .showMicrophoneRestriction
+        @unknown default:
+            return .openMicrophoneSettings
+        }
+
         if isReady {
             return .start
         }
