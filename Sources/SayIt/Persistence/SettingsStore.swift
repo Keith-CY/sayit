@@ -2356,8 +2356,110 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // MARK: - Transcription Provider (ASR)
+
+    /// Available transcription providers
+    enum TranscriptionProviderOption: String, CaseIterable, Identifiable {
+        case auto
+        case fluidAudio
+        case whisper
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .auto: return "Automatic (Recommended)"
+            case .fluidAudio: return "FluidAudio (Apple Silicon)"
+            case .whisper: return "Whisper (Intel/Universal)"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .auto: return "Uses FluidAudio on Apple Silicon, Whisper on Intel"
+            case .fluidAudio: return "Fast CoreML-based transcription optimized for M-series chips"
+            case .whisper: return "whisper.cpp - CPU-based, works on any Mac"
+            }
+        }
+    }
+
+    /// Selected transcription provider - defaults to "auto" which picks based on architecture
+    var selectedTranscriptionProvider: TranscriptionProviderOption {
+        get {
+            guard let rawValue = defaults.string(forKey: Keys.selectedTranscriptionProvider),
+                  let option = TranscriptionProviderOption(rawValue: rawValue)
+            else {
+                return .auto
+            }
+            return option
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.selectedTranscriptionProvider)
+        }
+    }
+
+    /// Selected Whisper model size - defaults to "medium"
+    var whisperModelSize: WhisperModelSize {
+        get {
+            guard let rawValue = defaults.string(forKey: Keys.whisperModelSize),
+                  let size = WhisperModelSize(rawValue: rawValue)
+            else {
+                return .medium
+            }
+            return size
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.whisperModelSize)
+        }
+    }
+
     // MARK: - Speech Language Mode
 
+    /// Selected speech language mode for recognition.
+    /// `auto` keeps current language-aware behavior and locale fallback.
+    /// Manual modes force the provider locale selection for Apple Speech engines.
+    var speechLanguageMode: SpeechLanguageMode {
+        get {
+            guard let rawValue = self.defaults.string(forKey: Keys.selectedSpeechLanguageMode),
+                  let mode = SpeechLanguageMode(rawValue: rawValue)
+            else {
+                return .auto
+            }
+            return mode
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.selectedSpeechLanguageMode)
+            self.resetSpeechModelStateIfNeeded(for: newValue)
+        }
+    }
+
+    /// Whether automatic language detection should probe additional locales in auto mode.
+    /// On true, Apple Speech providers try a small fallback language list if the
+    /// selected locale returns no result.
+    var enableSmartLanguageDetection: Bool {
+        get {
+            guard let value = self.defaults.object(forKey: Keys.enableSmartLanguageDetection) as? Bool else {
+                return true
+            }
+            return value
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.enableSmartLanguageDetection)
+        }
+    }
+
+    private func resetSpeechModelStateIfNeeded(for _mode: SpeechLanguageMode) {
+        // Switching away from auto language detection can change model suitability for Chinese-only input,
+        // so we re-normalize the selected speech model.
+        self.selectedSpeechModel = self.selectedSpeechModel
+    }
+}
+
+extension SettingsStore {
     /// User preference for speech recognition language routing.
     /// `.auto` keeps locale-based language selection. Manual values force the locale used
     /// by system speech providers for users who want deterministic behavior.
@@ -2449,108 +2551,6 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    // MARK: - Transcription Provider (ASR)
-
-    /// Available transcription providers
-    enum TranscriptionProviderOption: String, CaseIterable, Identifiable {
-        case auto
-        case fluidAudio
-        case whisper
-
-        var id: String { rawValue }
-
-        var displayName: String {
-            switch self {
-            case .auto: return "Automatic (Recommended)"
-            case .fluidAudio: return "FluidAudio (Apple Silicon)"
-            case .whisper: return "Whisper (Intel/Universal)"
-            }
-        }
-
-        var description: String {
-            switch self {
-            case .auto: return "Uses FluidAudio on Apple Silicon, Whisper on Intel"
-            case .fluidAudio: return "Fast CoreML-based transcription optimized for M-series chips"
-            case .whisper: return "whisper.cpp - CPU-based, works on any Mac"
-            }
-        }
-    }
-
-    /// Selected transcription provider - defaults to "auto" which picks based on architecture
-    var selectedTranscriptionProvider: TranscriptionProviderOption {
-        get {
-            guard let rawValue = defaults.string(forKey: Keys.selectedTranscriptionProvider),
-                  let option = TranscriptionProviderOption(rawValue: rawValue)
-            else {
-                return .auto
-            }
-            return option
-        }
-        set {
-            objectWillChange.send()
-            self.defaults.set(newValue.rawValue, forKey: Keys.selectedTranscriptionProvider)
-        }
-    }
-
-    /// Selected Whisper model size - defaults to "medium"
-    var whisperModelSize: WhisperModelSize {
-        get {
-            guard let rawValue = defaults.string(forKey: Keys.whisperModelSize),
-                  let size = WhisperModelSize(rawValue: rawValue)
-            else {
-                return .medium
-            }
-            return size
-        }
-        set {
-            objectWillChange.send()
-            self.defaults.set(newValue.rawValue, forKey: Keys.whisperModelSize)
-        }
-    }
-
-    /// Selected speech language mode for recognition.
-    /// `auto` keeps current language-aware behavior and locale fallback.
-    /// Manual modes force the provider locale selection for Apple Speech engines.
-    var speechLanguageMode: SpeechLanguageMode {
-        get {
-            guard let rawValue = self.defaults.string(forKey: Keys.selectedSpeechLanguageMode),
-                  let mode = SpeechLanguageMode(rawValue: rawValue)
-            else {
-                return .auto
-            }
-            return mode
-        }
-        set {
-            objectWillChange.send()
-            self.defaults.set(newValue.rawValue, forKey: Keys.selectedSpeechLanguageMode)
-            self.resetSpeechModelStateIfNeeded(for: newValue)
-        }
-    }
-
-    /// Whether automatic language detection should probe additional locales in auto mode.
-    /// On true, Apple Speech providers try a small fallback language list if the
-    /// selected locale returns no result.
-    var enableSmartLanguageDetection: Bool {
-        get {
-            guard let value = self.defaults.object(forKey: Keys.enableSmartLanguageDetection) as? Bool else {
-                return true
-            }
-            return value
-        }
-        set {
-            objectWillChange.send()
-            self.defaults.set(newValue, forKey: Keys.enableSmartLanguageDetection)
-        }
-    }
-
-    private func resetSpeechModelStateIfNeeded(for _mode: SpeechLanguageMode) {
-        // Switching away from auto language detection can change model suitability for Chinese-only input,
-        // so we re-normalize the selected speech model.
-        self.selectedSpeechModel = self.selectedSpeechModel
-    }
-}
-
-extension SettingsStore {
     /// Available Whisper model sizes
     enum WhisperModelSize: String, CaseIterable, Identifiable {
         case medium = "ggml-medium.bin"
