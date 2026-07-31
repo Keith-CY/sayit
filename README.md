@@ -77,9 +77,10 @@ Updates** or **Check for Updates…** in the menu bar. The app checks once per
 day by default, but it never installs without confirmation.
 
 Both the update feed and downloaded archive are verified with SayIt's Sparkle
-EdDSA key. Release builds use an ad-hoc macOS signature for bundle integrity;
-they are not Apple-signed or notarized. Version 1.6.0 is the one-time manual
-bootstrap; future releases can update in place.
+EdDSA key. Release builds use a stable self-signed macOS identity so updates
+retain the same local code identity and privacy grants; they are not signed by
+Apple or notarized. Version 1.6.1 is the one-time manual bootstrap; future
+releases can update in place.
 
 Maintainer details: [GitHub update and release process](docs/GITHUB_UPDATES.md).
 
