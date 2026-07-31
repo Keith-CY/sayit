@@ -15,6 +15,7 @@ let package = Package(
             url: "https://github.com/FluidInference/FluidAudio.git",
             .upToNextMinor(from: "0.12.6")
         ),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4"),
     ],
     targets: [
         .executableTarget(
@@ -23,6 +24,7 @@ let package = Package(
                 "DynamicNotchKit",
                 "SwiftWhisper",
                 "FluidAudio",
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/SayIt",
             resources: [

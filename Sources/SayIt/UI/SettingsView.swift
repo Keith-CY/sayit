@@ -13,6 +13,7 @@ struct SettingsView: View {
     private var asr: ASRService { self.appServices.asr }
     @Environment(\.theme) private var theme
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var updateController = UpdateController.shared
     @Binding var appear: Bool
     @Binding var visualizerNoiseThreshold: Double
     @Binding var selectedInputUID: String
@@ -160,6 +161,72 @@ struct SettingsView: View {
                             Divider().opacity(0.2)
 
                         }
+                    }
+                    .padding(16)
+                }
+
+                // Software Updates Card
+                ThemedCard(style: .standard) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Label("Software Updates", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+
+                            Spacer()
+
+                            Text("Version \(self.updateController.currentVersion.displayName)")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        self.settingsToggleRow(
+                            title: "Check for updates automatically",
+                            description: "Check GitHub Releases once per day. Installing an update always asks first.",
+                            isOn: Binding(
+                                get: { self.updateController.automaticChecksEnabled },
+                                set: { self.updateController.setAutomaticChecksEnabled($0) }
+                            )
+                        )
+
+                        Divider().opacity(0.2)
+
+                        HStack(spacing: 10) {
+                            Button {
+                                self.updateController.checkForUpdates()
+                            } label: {
+                                Label("Check for Updates", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(self.theme.palette.accent)
+
+                            Button("View Releases") {
+                                self.updateController.openReleasesPage()
+                            }
+                            .buttonStyle(.bordered)
+
+                            Spacer()
+
+                            if let lastCheckDate = updateController.lastCheckDate {
+                                Text("Last checked \(lastCheckDate.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if let lastErrorMessage = updateController.lastErrorMessage {
+                            Label(lastErrorMessage, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(self.theme.palette.warning)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Label(
+                            "Downloads are verified with SayIt’s EdDSA update key before installation.",
+                            systemImage: "checkmark.shield"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     .padding(16)
                 }
@@ -831,6 +898,8 @@ struct SettingsView: View {
             .padding(16)
         }
         .onAppear {
+            self.updateController.refreshStatus()
+
             Task { @MainActor in
                 // Ensure the shared audio startup gate is scheduled. Safe to call repeatedly.
                 await AudioStartupGate.shared.scheduleOpenAfterInitialUISettled()

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -24,7 +24,7 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Define short SHA
         id: build_vars
@@ -38,13 +38,13 @@ jobs:
         run: sudo gem install xcpretty
 
       - name: Cache Whisper models
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/Library/Caches/WhisperModels
           key: ${{ runner.os }}-whisper-models-v1
 
       - name: Run SwiftLint (strict)
-        run: swiftlint --strict --config .swiftlint.yml
+        run: swiftlint --strict --no-cache --config .swiftlint.yml
       
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -97,6 +97,8 @@ jobs:
             "$RUNNER_TEMP/SayIt-macOS-${{ steps.build_vars.outputs.short_sha }}.zip"
 
       - name: Run Tests
+        env:
+          SAYIT_TEST_DISABLE_KEYCHAIN: "1"
         run: |
           set -o pipefail
           xcodebuild test \
@@ -109,7 +111,7 @@ jobs:
             | xcpretty
 
       - name: Upload macOS app artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SayIt-macOS-${{ github.sha }}
           path: ${{ runner.temp }}/SayIt-macOS-${{ steps.build_vars.outputs.short_sha }}.zip

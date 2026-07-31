@@ -16,6 +16,7 @@ Download: [latest release](https://github.com/Keith-CY/sayit/releases/latest)
 ## Requirements
 
 - macOS 14.0+
+- Apple silicon Mac
 - Microphone permission
 - Accessibility permission (for global typing)
 
@@ -26,6 +27,12 @@ Download: [latest release](https://github.com/Keith-CY/sayit/releases/latest)
 3. Open **Settings** and set a hotkey.
 4. Press the hotkey to start/stop recording.
 5. Confirm the transcribed text and send.
+
+Because SayIt is distributed without an Apple Developer account, the first
+download is not notarized. Download only from this repository, then
+Control-click SayIt and choose **Open**. If macOS still blocks it, use
+**System Settings -> Privacy & Security -> Open Anyway**. Do not disable
+Gatekeeper globally.
 
 ## Recommended Chinese + English Setup
 
@@ -62,6 +69,19 @@ Notes:
 - Local API keys are optional, but are sent when configured (useful for authenticated LAN proxies).
 - If optional cleanup fails or returns empty text, SayIt uses the original transcription instead of typing an error message.
 - The default cleanup prompt preserves Chinese/English code-switching and does not translate.
+
+## Updates
+
+SayIt 1.6.0 and later can check GitHub Releases from **Preferences -> Software
+Updates** or **Check for Updates…** in the menu bar. The app checks once per
+day by default, but it never installs without confirmation.
+
+Both the update feed and downloaded archive are verified with SayIt's Sparkle
+EdDSA key. Release builds use an ad-hoc macOS signature for bundle integrity;
+they are not Apple-signed or notarized. Version 1.6.0 is the one-time manual
+bootstrap; future releases can update in place.
+
+Maintainer details: [GitHub update and release process](docs/GITHUB_UPDATES.md).
 
 ## Build from Source
 

@@ -387,6 +387,17 @@ final class MenuBarManager: ObservableObject {
         preferencesItem.keyEquivalentModifierMask = [.command]
         menu.addItem(preferencesItem)
 
+        // Software Updates
+        let updateItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
+
+        menu.addItem(.separator())
+
         // Quit
         let quitItem = NSMenuItem(
             title: AppIdentity.menuQuitItem,
@@ -497,6 +508,10 @@ final class MenuBarManager: ObservableObject {
             self?.requestedNavigationDestination = nil
             self?.requestedNavigationDestination = .preferences
         }
+    }
+
+    @objc private func checkForUpdates() {
+        UpdateController.shared.checkForUpdates()
     }
 
     /// Public entry-point for non-menu UI surfaces (e.g. overlay controls) to open Preferences.

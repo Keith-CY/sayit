@@ -1,0 +1,199 @@
+name: Publish GitHub Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify and publish SayIt
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v7
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install build tools
+        run: |
+          brew install swiftlint
+          sudo gem install xcpretty
+
+      - name: Run SwiftLint
+        run: swiftlint --strict --no-cache --config .swiftlint.yml
+
+      - name: Resolve Swift Package dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project SayIt.xcodeproj \
+            -scheme SayIt \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages"
+
+      - name: Validate release tag and version
+        id: version
+        run: |
+          build_settings="$(
+            xcodebuild \
+              -project SayIt.xcodeproj \
+              -scheme SayIt \
+              -configuration Release \
+              -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+              -showBuildSettings
+          )"
+          version="$(awk '$1 == "MARKETING_VERSION" { print $3; exit }' <<< "$build_settings")"
+          build_number="$(awk '$1 == "CURRENT_PROJECT_VERSION" { print $3; exit }' <<< "$build_settings")"
+
+          test -n "$version"
+          test -n "$build_number"
+          test "$GITHUB_REF_NAME" = "v$version"
+
+          {
+            echo "version=$version"
+            echo "build_number=$build_number"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        env:
+          SAYIT_TEST_DISABLE_KEYCHAIN: "1"
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project SayIt.xcodeproj \
+            -scheme SayIt \
+            -destination 'platform=macOS,arch=arm64' \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+      - name: Archive ad-hoc signed app
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project SayIt.xcodeproj \
+            -scheme SayIt \
+            -configuration Release \
+            -destination 'platform=macOS,arch=arm64' \
+            -archivePath "$RUNNER_TEMP/SayIt.xcarchive" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp=none" \
+            | xcpretty
+
+      - name: Verify and package signed app
+        id: package
+        run: |
+          app_path="$RUNNER_TEMP/SayIt.xcarchive/Products/Applications/SayIt.app"
+          release_directory="$RUNNER_TEMP/release"
+          archive_name="SayIt-v${{ steps.version.outputs.version }}-arm64.zip"
+          archive_path="$release_directory/$archive_name"
+
+          test -d "$app_path/Contents/Frameworks/Sparkle.framework"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
+
+          signature_details="$(/usr/bin/codesign -d --verbose=4 "$app_path" 2>&1)"
+          case "$signature_details" in
+            *"Signature=adhoc"*) ;;
+            *)
+              echo "The release app must use an ad-hoc signature."
+              exit 1
+              ;;
+          esac
+
+          bundled_version="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleShortVersionString' \
+              "$app_path/Contents/Info.plist"
+          )"
+          bundled_build="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleVersion' \
+              "$app_path/Contents/Info.plist"
+          )"
+          test "$bundled_version" = "${{ steps.version.outputs.version }}"
+          test "$bundled_build" = "${{ steps.version.outputs.build_number }}"
+
+          mkdir -p "$release_directory"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "$archive_path"
+
+          {
+            echo "archive_path=$archive_path"
+            echo "archive_name=$archive_name"
+            echo "release_directory=$release_directory"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate and verify signed Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_PRIVATE_KEY"
+
+          sparkle_bin="$RUNNER_TEMP/SourcePackages/artifacts/sparkle/Sparkle/bin"
+          private_key_path="$RUNNER_TEMP/sparkle-private-key"
+          release_directory="${{ steps.package.outputs.release_directory }}"
+          archive_path="${{ steps.package.outputs.archive_path }}"
+          appcast_path="$release_directory/appcast.xml"
+          release_url="https://github.com/${{ github.repository }}/releases/tag/$GITHUB_REF_NAME"
+
+          test -x "$sparkle_bin/generate_appcast"
+          test -x "$sparkle_bin/sign_update"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$private_key_path"
+          chmod 600 "$private_key_path"
+
+          "$sparkle_bin/generate_appcast" \
+            --ed-key-file "$private_key_path" \
+            --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/$GITHUB_REF_NAME/" \
+            --full-release-notes-url "$release_url" \
+            --link "$release_url" \
+            --maximum-versions 1 \
+            --maximum-deltas 0 \
+            "$release_directory"
+
+          test -s "$appcast_path"
+          xmllint --noout "$appcast_path"
+          "$sparkle_bin/sign_update" \
+            --ed-key-file "$private_key_path" \
+            --verify \
+            "$appcast_path"
+
+          archive_signature="$(
+            xmllint \
+              --xpath 'string(//*[local-name()="enclosure"]/@*[local-name()="edSignature"])' \
+              "$appcast_path"
+          )"
+          test -n "$archive_signature"
+          "$sparkle_bin/sign_update" \
+            --ed-key-file "$private_key_path" \
+            --verify \
+            "$archive_path" \
+            "$archive_signature"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.package.outputs.archive_path }}" \
+            "${{ steps.package.outputs.release_directory }}/appcast.xml" \
+            --verify-tag \
+            --generate-notes \
+            --title "SayIt ${{ steps.version.outputs.version }}"

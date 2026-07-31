@@ -26,12 +26,17 @@ final class KeychainService {
     private let service = AppIdentity.keychainService
     private let legacyService = AppIdentity.legacyKeychainService
     private let account = AppIdentity.keychainAccount
+    // The shared test scheme sets this so an unsigned test host never touches a user's real API keys.
+    private var isDisabledForTests: Bool {
+        ProcessInfo.processInfo.environment["SAYIT_TEST_DISABLE_KEYCHAIN"] == "1"
+    }
 
     private init() {}
 
     // MARK: - Public API
 
     func storeKey(_ key: String, for providerID: String) throws {
+        guard !self.isDisabledForTests else { return }
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         var keys = try loadStoredKeys()
         keys[providerID] = trimmed
@@ -39,34 +44,41 @@ final class KeychainService {
     }
 
     func fetchKey(for providerID: String) throws -> String? {
+        guard !self.isDisabledForTests else { return nil }
         let keys = try loadStoredKeys()
         return keys[providerID]
     }
 
     func deleteKey(for providerID: String) throws {
+        guard !self.isDisabledForTests else { return }
         var keys = try loadStoredKeys()
         guard keys.removeValue(forKey: providerID) != nil else { return }
         try self.saveStoredKeys(keys)
     }
 
     func containsKey(for providerID: String) -> Bool {
+        guard !self.isDisabledForTests else { return false }
         guard let keys = try? loadStoredKeys() else { return false }
         return keys[providerID] != nil
     }
 
     func allProviderIDs() throws -> [String] {
+        guard !self.isDisabledForTests else { return [] }
         return try self.loadStoredKeys().keys.sorted()
     }
 
     func fetchAllKeys() throws -> [String: String] {
-        try self.loadStoredKeys()
+        guard !self.isDisabledForTests else { return [:] }
+        return try self.loadStoredKeys()
     }
 
     func storeAllKeys(_ values: [String: String]) throws {
+        guard !self.isDisabledForTests else { return }
         try self.saveStoredKeys(values)
     }
 
     func legacyProviderEntries() throws -> [String: String] {
+        guard !self.isDisabledForTests else { return [:] }
         var result: [String: String] = [:]
         let services = [self.service, self.legacyService]
 
@@ -106,6 +118,7 @@ final class KeychainService {
     }
 
     func removeLegacyEntries(providerIDs: [String] = []) throws {
+        guard !self.isDisabledForTests else { return }
         let targetProviderIDs: [String]
         if providerIDs.isEmpty {
             targetProviderIDs = Array(try self.legacyProviderEntries().keys)
