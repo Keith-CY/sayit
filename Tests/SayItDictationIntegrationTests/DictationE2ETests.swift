@@ -14,6 +14,8 @@ final class DictationE2ETests: XCTestCase {
     private let selectedSpeechLanguageModeKey = "SelectedSpeechLanguageMode"
     private let selectedSpeechModelKey = "SelectedSpeechModel"
     private static let runWhisperE2EEnvKey = "RUN_WHISPER_E2E_TESTS"
+    private static let whisperE2EAudioPathEnvKey = "WHISPER_E2E_AUDIO_PATH"
+    private static let whisperE2EModelDirectoryEnvKey = "WHISPER_E2E_MODEL_DIRECTORY"
     private static let runAppleSpeechE2EEnvKey = "RUN_APPLE_SPEECH_E2E_TESTS"
     private static let appleSpeechE2EAudioPathEnvKey = "APPLE_SPEECH_E2E_AUDIO_PATH"
     private static let runLlamaCppE2EEnvKey = "RUN_LLAMA_CPP_E2E_TESTS"
@@ -320,6 +322,20 @@ final class DictationE2ETests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testRecordingControlShowsStartingStateImmediatelyWhileAudioEngineStarts() {
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: false,
+                isStarting: true,
+                isReady: true,
+                isPreparingModel: false,
+                micStatus: .authorized
+            ),
+            .starting
+        )
+    }
+
     func testAccessibilityPromptCooldownDoesNotSuppressNewBuild() {
         let now: TimeInterval = 10_000
         let lastPromptAt: TimeInterval = 9_900
@@ -505,17 +521,44 @@ final class DictationE2ETests: XCTestCase {
 
     @MainActor
     private func assertWhisperTranscribesFixture(model: SettingsStore.SpeechModel) async throws {
+        let defaults = UserDefaults.standard
+        let previousSpeechModel = defaults.object(forKey: self.selectedSpeechModelKey)
+        defer {
+            if let previousSpeechModel {
+                defaults.set(previousSpeechModel, forKey: self.selectedSpeechModelKey)
+            } else {
+                defaults.removeObject(forKey: self.selectedSpeechModelKey)
+            }
+        }
+
         SettingsStore.shared.selectedSpeechModel = model
         AnalyticsService.shared.setEnabled(false)
 
-        let modelDirectory = Self.modelDirectoryForRun()
+        let environment = ProcessInfo.processInfo.environment
+        let modelDirectory = environment[Self.whisperE2EModelDirectoryEnvKey]
+            .flatMap { path in
+                let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed, isDirectory: true)
+            }
+            ?? Self.modelDirectoryForRun()
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
 
         let provider = WhisperProvider(modelDirectory: modelDirectory)
 
         // Act
         try await provider.prepare()
-        let samples = try AudioFixtureLoader.load16kMonoFloatSamples(named: "dictation_fixture", ext: "wav")
+        let externalAudioPath = environment[Self.whisperE2EAudioPathEnvKey]
+        let samples: [Float]
+        if let externalAudioPath {
+            samples = try AudioFixtureLoader.load16kMonoFloatSamples(
+                from: URL(fileURLWithPath: externalAudioPath)
+            )
+        } else {
+            samples = try AudioFixtureLoader.load16kMonoFloatSamples(
+                named: "dictation_fixture",
+                ext: "wav"
+            )
+        }
         let result = try await provider.transcribe(samples)
 
         // Assert
@@ -523,6 +566,23 @@ final class DictationE2ETests: XCTestCase {
         XCTAssertFalse(raw.isEmpty, "Expected non-empty transcription text.")
 
         let normalized = Self.normalize(raw)
+        if externalAudioPath != nil {
+            print("WHISPER_E2E_TRANSCRIPT=\(raw)")
+            XCTAssertTrue(
+                raw.unicodeScalars.contains(where: {
+                    (0x4E00 ... 0x9FFF).contains(Int($0.value))
+                }),
+                "Expected Whisper to retain Chinese. Got: \(raw)"
+            )
+            for term in ["review", "staging", "local", "model"] {
+                XCTAssertTrue(
+                    normalized.contains(term),
+                    "Expected Whisper to retain English term '\(term)'. Got: \(raw)"
+                )
+            }
+            return
+        }
+
         XCTAssertTrue(normalized.contains("hello"), "Expected transcription to contain 'hello'. Got: \(raw)")
         XCTAssertTrue(normalized.contains("fluid"), "Expected transcription to contain 'fluid'. Got: \(raw)")
         XCTAssertTrue(
@@ -582,6 +642,38 @@ final class DictationE2ETests: XCTestCase {
         XCTAssertTrue(response.content.contains("pull request"), "Expected English phrase 'pull request' to be preserved. Got: \(response.content)")
         XCTAssertTrue(response.content.contains("deploy"), "Expected English word 'deploy' to be preserved. Got: \(response.content)")
         XCTAssertTrue(response.content.contains("staging"), "Expected English word 'staging' to be preserved. Got: \(response.content)")
+
+        var repairConfig = LLMClient.Config(
+            messages: [
+                ["role": "system", "content": SettingsStore.baseDictationPromptText()],
+                [
+                    "role": "user",
+                    "content": "今天我们 review 这个 plorequest，然后 Daploy 到 staging 环境，明天继续测试 ATI 和 local model。",
+                ],
+            ],
+            model: model,
+            baseURL: baseURL,
+            apiKey: "",
+            streaming: false,
+            temperature: 0,
+            providerID: "llamacpp"
+        )
+        repairConfig.maxRetries = 0
+        repairConfig.timeoutSeconds = 120
+        let repairedResponse = try await LLMClient.shared.call(repairConfig)
+        let repaired = repairedResponse.content.lowercased()
+
+        XCTAssertTrue(
+            repairedResponse.content.unicodeScalars.contains(where: {
+                (0x4E00 ... 0x9FFF).contains(Int($0.value))
+            }),
+            "Expected repaired output to retain Chinese. Got: \(repairedResponse.content)"
+        )
+        XCTAssertTrue(repaired.contains("review"), "Expected 'review' to remain intact. Got: \(repairedResponse.content)")
+        XCTAssertTrue(repaired.contains("pull request"), "Expected obvious ASR error 'plorequest' to become 'pull request'. Got: \(repairedResponse.content)")
+        XCTAssertTrue(repaired.contains("deploy"), "Expected obvious ASR error 'Daploy' to become 'deploy'. Got: \(repairedResponse.content)")
+        XCTAssertTrue(repaired.contains("api"), "Expected obvious ASR error 'ATI' to become 'API'. Got: \(repairedResponse.content)")
+        XCTAssertTrue(repaired.contains("local model"), "Expected 'local model' to remain intact. Got: \(repairedResponse.content)")
     }
 
     private static func modelDirectoryForRun() -> URL {

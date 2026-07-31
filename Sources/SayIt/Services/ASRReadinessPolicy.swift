@@ -15,6 +15,7 @@ enum ASRStartupPolicy {
 
 enum RecordingControlAction: Equatable {
     case start
+    case starting
     case stop
     case prepareAndStart
     case waitForModel
@@ -26,12 +27,16 @@ enum RecordingControlAction: Equatable {
 enum RecordingControlPolicy {
     static func action(
         isRunning: Bool,
+        isStarting: Bool = false,
         isReady: Bool,
         isPreparingModel: Bool,
         micStatus: AVAuthorizationStatus = .authorized
     ) -> RecordingControlAction {
         if isRunning {
             return .stop
+        }
+        if isStarting {
+            return .starting
         }
 
         switch micStatus {

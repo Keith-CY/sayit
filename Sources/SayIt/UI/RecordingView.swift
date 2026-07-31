@@ -20,6 +20,7 @@ struct RecordingView: View {
     private var recordingControlAction: RecordingControlAction {
         RecordingControlPolicy.action(
             isRunning: self.asr.isRunning,
+            isStarting: self.asr.isStarting,
             isReady: self.asr.isAsrReady,
             isPreparingModel: self.asr.isDownloadingModel || self.asr.isLoadingModel,
             micStatus: self.asr.micStatus
@@ -54,17 +55,19 @@ struct RecordingView: View {
                             // Status indicator
                             HStack {
                                 Circle()
-                                    .fill(self.asr.isRunning ? .red : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
+                                    .fill(self.asr.isRunning ? .red : self.asr.isStarting ? .orange : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
                                     .frame(width: 8, height: 8)
 
-                                Text(self.asr.isRunning ? "Recording..." : self.asr.isAsrReady ? "Ready to record" : "Model not ready")
+                                Text(self.asr.isRunning ? "Recording..." : self.asr.isStarting ? "Starting microphone…" : self.asr.isAsrReady ? "Ready to record" : "Model not ready")
                                     .font(.subheadline)
-                                    .foregroundStyle(self.asr.isRunning ? .red : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
+                                    .foregroundStyle(self.asr.isRunning ? .red : self.asr.isStarting ? .orange : self.asr.isAsrReady ? Color.fluidGreen : .secondary)
                             }
 
                             // Recording Control (Single Toggle Button)
                             Button(action: {
                                 switch self.recordingControlAction {
+                                case .starting:
+                                    break
                                 case .stop:
                                     Task {
                                         await self.stopAndProcessTranscription()
@@ -93,8 +96,13 @@ struct RecordingView: View {
                                 }
                             }) {
                                 HStack {
-                                    Image(systemName: self.recordingControlAction == .stop ? "stop.fill" : "mic.fill")
-                                        .font(.system(size: 16, weight: .semibold))
+                                    if self.recordingControlAction == .starting {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else {
+                                        Image(systemName: self.recordingControlAction == .stop ? "stop.fill" : "mic.fill")
+                                            .font(.system(size: 16, weight: .semibold))
+                                    }
                                     Text(self.recordingButtonTitle)
                                 }
                                 .frame(maxWidth: .infinity)
@@ -103,7 +111,10 @@ struct RecordingView: View {
                             .buttonHoverEffect()
                             .scaleEffect(self.asr.isRunning ? 1.05 : 1.0)
                             .animation(.spring(response: 0.3), value: self.asr.isRunning)
-                            .disabled(self.recordingControlAction == .waitForModel)
+                            .disabled(
+                                self.recordingControlAction == .waitForModel
+                                    || self.recordingControlAction == .starting
+                            )
                         }
                     }
                     .padding(14)
@@ -118,6 +129,8 @@ struct RecordingView: View {
         switch self.recordingControlAction {
         case .start:
             return "Start Recording"
+        case .starting:
+            return "Starting Microphone…"
         case .stop:
             return "Stop Recording"
         case .prepareAndStart:

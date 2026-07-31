@@ -98,6 +98,7 @@ private actor ModelDownloadRegistry {
 @MainActor
 final class ASRService: ObservableObject {
     @Published var isRunning: Bool = false
+    @Published private(set) var isStarting: Bool = false
     @Published var finalText: String = ""
     @Published var partialTranscription: String = ""
     @Published var wordBoostStatusText: String = "Word boost: off"
@@ -109,7 +110,6 @@ final class ASRService: ObservableObject {
     @Published var downloadProgress: Double? = nil
     @Published var downloadingModelId: String? = nil // Tracks which model is currently being downloaded
 
-    private var isStarting: Bool = false // Guard against re-entrant start() calls
     private var downloadProgressTask: Task<Void, Never>?
     private var hasCompletedFirstTranscription: Bool = false // Track if model has warmed up with first transcription
     private var lastBoostHitTerm: String?
@@ -685,6 +685,13 @@ final class ASRService: ObservableObject {
     func start() async {
         DebugLogger.shared.info("🎤 START() called - beginning recording session", source: "ASRService")
 
+        guard self.isRunning == false, self.isStarting == false else {
+            DebugLogger.shared.warning("⚠️ START() blocked - already running (started: \(self.isRunning), starting: \(self.isStarting))", source: "ASRService")
+            return
+        }
+        self.isStarting = true
+        defer { self.isStarting = false }
+
         // Permissions can change while SayIt is in the background. Always consult
         // the system at the moment recording starts instead of trusting stale UI state.
         let hasMicAccess = await self.requestMicAccessIfNeeded()
@@ -694,11 +701,6 @@ final class ASRService: ObservableObject {
             self.showMicPermissionError(for: status)
             return
         }
-        guard self.isRunning == false, self.isStarting == false else {
-            DebugLogger.shared.warning("⚠️ START() blocked - already running (started: \(self.isRunning), starting: \(self.isStarting))", source: "ASRService")
-            return
-        }
-
         // Reset media pause state for this session
         self.didPauseMediaForThisSession = false
 
@@ -714,9 +716,6 @@ final class ASRService: ObservableObject {
         self.audioCapturePipeline.setRecordingEnabled(true)
         self.refreshWordBoostStatus()
         DebugLogger.shared.debug("✅ Buffers cleared", source: "ASRService")
-
-        self.isStarting = true
-        defer { self.isStarting = false }
 
         do {
             DebugLogger.shared.debug("⚙️ Calling configureSession()...", source: "ASRService")

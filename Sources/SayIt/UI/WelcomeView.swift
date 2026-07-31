@@ -34,6 +34,7 @@ struct WelcomeView: View {
     private var recordingControlAction: RecordingControlAction {
         RecordingControlPolicy.action(
             isRunning: self.asr.isRunning,
+            isStarting: self.asr.isStarting,
             isReady: self.asr.isAsrReady,
             isPreparingModel: self.asr.isDownloadingModel || self.asr.isLoadingModel,
             micStatus: self.asr.micStatus
@@ -44,6 +45,8 @@ struct WelcomeView: View {
         switch self.recordingControlAction {
         case .start:
             return "Start Recording"
+        case .starting:
+            return "Starting Microphone…"
         case .stop:
             return "Stop Recording"
         case .prepareAndStart:
@@ -63,6 +66,8 @@ struct WelcomeView: View {
         switch self.recordingControlAction {
         case .start:
             return "mic.fill"
+        case .starting:
+            return "hourglass"
         case .stop:
             return "stop.fill"
         case .prepareAndStart:
@@ -395,6 +400,8 @@ struct WelcomeView: View {
                             VStack(spacing: 10) {
                                 Button {
                                     switch self.recordingControlAction {
+                                    case .starting:
+                                        break
                                     case .stop:
                                         Task {
                                             await self.stopAndProcessTranscription()
@@ -423,7 +430,12 @@ struct WelcomeView: View {
                                     }
                                 } label: {
                                     HStack {
-                                        Image(systemName: self.recordingButtonIcon)
+                                        if self.recordingControlAction == .starting {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Image(systemName: self.recordingButtonIcon)
+                                        }
                                         Text(self.recordingButtonTitle)
                                     }
                                     .frame(maxWidth: .infinity)
@@ -432,7 +444,10 @@ struct WelcomeView: View {
                                 .buttonHoverEffect()
                                 .scaleEffect(self.asr.isRunning ? 1.02 : 1.0)
                                 .animation(.spring(response: 0.3), value: self.asr.isRunning)
-                                .disabled(self.recordingControlAction == .waitForModel)
+                                .disabled(
+                                    self.recordingControlAction == .waitForModel
+                                        || self.recordingControlAction == .starting
+                                )
 
                                 if !self.asr.isRunning && !self.asr.finalText.isEmpty {
                                     Button("Clear Results") {
