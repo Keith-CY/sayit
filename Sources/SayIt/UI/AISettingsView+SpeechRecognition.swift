@@ -557,6 +557,17 @@ extension VoiceEngineSettingsView {
                 Image(systemName: "doc.fill").foregroundStyle(self.theme.palette.accent).font(.caption)
                 Text("Cached").font(.caption).foregroundStyle(.secondary)
 
+                Button(action: { Task { await self.viewModel.downloadModels() } }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                        Text("Load")
+                    }
+                    .font(.caption)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(Color.fluidGreen)
+
                 Button(action: { Task { await self.viewModel.deleteModels() } }) {
                     HStack(spacing: 4) {
                         Image(systemName: "trash")

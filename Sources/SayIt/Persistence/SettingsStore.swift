@@ -879,18 +879,22 @@ final class SettingsStore: ObservableObject {
         guard hasBaseURL else { return false }
         let isLocal = ModelRepository.shared.isLocalEndpoint(baseURL)
 
-        // 3. Check for API key and selected model
+        // 3. Local providers do not need an API key. Avoid touching Keychain here:
+        // ad-hoc GitHub builds have a new code signature after every update, and a
+        // synchronous Keychain lookup can block the first window from appearing.
         let key = self.canonicalProviderKey(for: providerID)
-        let apiKey = (self.getAPIKey(for: providerID) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasApiKey = !apiKey.isEmpty
-
         let selectedModel = self.selectedModelByProvider[key]
         let hasSelectedModel = !(selectedModel?.isEmpty ?? true)
         let hasDefaultModel = !ModelRepository.shared.defaultModels(for: providerID).isEmpty
         let hasModel = hasSelectedModel || hasDefaultModel
+        if isLocal {
+            return hasModel
+        }
 
-        return (isLocal || hasApiKey) && hasModel
+        // 4. Remote providers still require a stored API key.
+        let apiKey = (self.getAPIKey(for: providerID) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !apiKey.isEmpty && hasModel
     }
 
     /// The base URL for the currently selected AI provider
@@ -1956,6 +1960,7 @@ final class SettingsStore: ObservableObject {
 
         // MARK: - Whisper Models (Universal)
 
+        case whisperSmall = "whisper-small"
         case whisperMedium = "whisper-medium"
         case whisperLargeTurbo = "whisper-large-turbo" // temporarily disabled in UI
         case whisperLarge = "whisper-large"
@@ -1970,6 +1975,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return "Qwen3 ASR (Beta)"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
+            case .whisperSmall: return "Whisper Small"
             case .whisperMedium: return "Whisper Medium"
             case .whisperLargeTurbo: return "Whisper Large Turbo (Disabled)"
             case .whisperLarge: return "Whisper Large"
@@ -1982,7 +1988,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return "30 Languages"
             case .appleSpeech: return "System Languages"
             case .appleSpeechAnalyzer: return "EN, ES, FR, DE, IT, JA, KO, PT, ZH"
-            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return "99 Languages"
             }
         }
@@ -2003,9 +2009,10 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return "~2.0 GB"
             case .appleSpeech: return "Built-in (Zero Download)"
             case .appleSpeechAnalyzer: return "Built-in"
-            case .whisperMedium: return "~1.5 GB"
+            case .whisperSmall: return CPUArchitecture.isAppleSilicon ? "~360 MB" : "~190 MB"
+            case .whisperMedium: return CPUArchitecture.isAppleSilicon ? "~2.1 GB" : "~1.5 GB"
             case .whisperLargeTurbo: return "~1.6 GB"
-            case .whisperLarge: return "~2.9 GB"
+            case .whisperLarge: return CPUArchitecture.isAppleSilicon ? "~4.1 GB" : "~2.9 GB"
             }
         }
 
@@ -2026,6 +2033,7 @@ final class SettingsStore: ObservableObject {
         /// The ggml filename for Whisper models
         var whisperModelFile: String? {
             switch self {
+            case .whisperSmall: return "ggml-small-q5_1.bin"
             case .whisperMedium: return "ggml-medium.bin"
             case .whisperLargeTurbo: return "ggml-large-v3-turbo.bin"
             case .whisperLarge: return "ggml-large-v3.bin"
@@ -2036,6 +2044,7 @@ final class SettingsStore: ObservableObject {
         /// The short model name for whisper.cpp internal usage
         var whisperModelName: String? {
             switch self {
+            case .whisperSmall: return "small"
             case .whisperMedium: return "medium"
             case .whisperLargeTurbo: return "large-v3-turbo"
             case .whisperLarge: return "large-v3"
@@ -2093,6 +2102,11 @@ final class SettingsStore: ObservableObject {
         /// Default model for the current architecture
         static var defaultModel: SpeechModel {
             if CPUArchitecture.isAppleSilicon {
+                if #available(macOS 26.0, *),
+                   let speechAnalyzer = availableModels.first(where: { $0 == .appleSpeechAnalyzer })
+                {
+                    return speechAnalyzer
+                }
                 if let appleSpeech = availableModels.first(where: { $0 == .appleSpeech }) {
                     return appleSpeech
                 }
@@ -2108,7 +2122,8 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT: return "Blazing Fast - Multilingual"
             case .qwen3Asr: return "Qwen3 - Multilingual"
             case .appleSpeech: return "Apple ASR Legacy"
-            case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
+            case .appleSpeechAnalyzer: return "Fast On-Device Dictation - Recommended"
+            case .whisperSmall: return "Private Multilingual Fallback"
             case .whisperMedium: return "Medium Quality"
             case .whisperLargeTurbo: return "Higher Quality but Faster"
             case .whisperLarge: return "Maximum Accuracy"
@@ -2126,6 +2141,8 @@ final class SettingsStore: ObservableObject {
                 return "Built-in macOS speech recognition. No download required."
             case .appleSpeechAnalyzer:
                 return "Advanced and modern on-device recognition for newer macOS devices."
+            case .whisperSmall:
+                return "Fast multilingual transcription for everyday mixed-language dictation."
             case .whisperMedium:
                 return "High accuracy for demanding tasks. Requires more memory."
             case .whisperLargeTurbo:
@@ -2144,6 +2161,8 @@ final class SettingsStore: ObservableObject {
                 return 8.0
             case .appleSpeech, .appleSpeechAnalyzer:
                 return 2.0 // Built-in, minimal overhead
+            case .whisperSmall:
+                return 3.0
             case .whisperMedium:
                 return 6.0
             case .whisperLargeTurbo:
@@ -2164,6 +2183,8 @@ final class SettingsStore: ObservableObject {
                 return "⚠️ Requires 8GB+ RAM. May be unstable on some systems."
             case .whisperMedium:
                 return "Requires 6GB+ RAM for stable operation."
+            case .whisperSmall:
+                return nil
             default:
                 return nil
             }
@@ -2176,6 +2197,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return 3
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
+            case .whisperSmall: return 4
             case .whisperMedium: return 2
             case .whisperLargeTurbo: return 3
             case .whisperLarge: return 1
@@ -2189,6 +2211,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return 4
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
+            case .whisperSmall: return 4
             case .whisperMedium: return 4
             case .whisperLargeTurbo: return 5
             case .whisperLarge: return 5
@@ -2202,6 +2225,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return 0.45
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.85
+            case .whisperSmall: return 0.75
             case .whisperMedium: return 0.40
             case .whisperLargeTurbo: return 0.65
             case .whisperLarge: return 0.20
@@ -2215,6 +2239,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return 0.90
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.80
+            case .whisperSmall: return 0.72
             case .whisperMedium: return 0.80
             case .whisperLargeTurbo: return 0.95
             case .whisperLarge: return 1.00
@@ -2226,7 +2251,8 @@ final class SettingsStore: ObservableObject {
             switch self {
             case .parakeetTDT: return AppIdentity.parakeetBrandBadge
             case .qwen3Asr: return "Beta"
-            case .appleSpeechAnalyzer: return "New"
+            case .appleSpeechAnalyzer: return "Recommended"
+            case .whisperSmall: return "Offline"
             default: return nil
             }
         }
@@ -2245,7 +2271,7 @@ final class SettingsStore: ObservableObject {
         /// Large Whisper models are too slow for streaming, so they only do final transcription on stop.
         var supportsStreaming: Bool {
             switch self {
-            case .qwen3Asr, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .qwen3Asr, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return false // Too slow for real-time chunk processing
             default:
                 return true // All other models support streaming
@@ -2269,7 +2295,7 @@ final class SettingsStore: ObservableObject {
                 return .apple
             case .qwen3Asr:
                 return .qwen
-            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return .openai
             }
         }
@@ -2328,7 +2354,7 @@ final class SettingsStore: ObservableObject {
                 return "Qwen"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "Apple"
-            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return "OpenAI"
             }
         }
@@ -2350,7 +2376,7 @@ final class SettingsStore: ObservableObject {
                 return "#E67E22"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "#A2AAAD" // Apple Gray
-            case .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            case .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return "#10A37F" // OpenAI Teal
             }
         }
@@ -2522,13 +2548,13 @@ extension SettingsStore {
 
             switch self {
             case .chineseEnglishMixed:
-                return []
+                return ["zh-CN", "zh-Hans-CN", "zh-Hans", "zh", "en-US", "en"]
             case .english:
                 return ["en-US", "en-GB", "en"]
             case .chineseSimplified:
-                return ["zh-Hans", "zh-Hans-CN", "zh-Hans-HK", "zh"]
+                return ["zh-CN", "zh-Hans-CN", "zh-Hans", "zh-Hans-HK", "zh"]
             case .chineseTraditional:
-                return ["zh-Hant", "zh-Hant-TW", "zh-Hant-HK", "zh"]
+                return ["zh-TW", "zh-HK", "zh-Hant-TW", "zh-Hant-HK", "zh-Hant", "zh"]
             case .japanese:
                 return ["ja-JP", "ja"]
             case .korean:
@@ -2553,6 +2579,7 @@ extension SettingsStore {
 
     /// Available Whisper model sizes
     enum WhisperModelSize: String, CaseIterable, Identifiable {
+        case small = "ggml-small-q5_1.bin"
         case medium = "ggml-medium.bin"
         case large = "ggml-large-v3.bin"
 
@@ -2560,6 +2587,7 @@ extension SettingsStore {
 
         var displayName: String {
             switch self {
+            case .small: return "Small (~190 MB)"
             case .medium: return "Medium (~1.5 GB)"
             case .large: return "Large (~2.9 GB)"
             }
@@ -2567,6 +2595,7 @@ extension SettingsStore {
 
         var description: String {
             switch self {
+            case .small: return "Recommended for everyday multilingual dictation"
             case .medium: return "High accuracy, requires more memory"
             case .large: return "Best accuracy, large download"
             }
@@ -2590,8 +2619,13 @@ extension SettingsStore {
             if model.isWhisperModel {
                 return model
             }
-            if SpeechModel.availableModels.contains(.whisperMedium) {
-                return .whisperMedium
+            if #available(macOS 26.0, *),
+               SpeechModel.availableModels.contains(.appleSpeechAnalyzer)
+            {
+                return .appleSpeechAnalyzer
+            }
+            if SpeechModel.availableModels.contains(.whisperSmall) {
+                return .whisperSmall
             }
         }
 
@@ -2655,9 +2689,10 @@ extension SettingsStore {
         case "whisper":
             // Map old whisper size to new model
             switch oldWhisperSize {
-            case "ggml-medium.bin", "ggml-base.bin", "ggml-small.bin", "ggml-tiny.bin": newModel = .whisperMedium
+            case "ggml-small.bin", "ggml-small-q5_1.bin", "ggml-base.bin", "ggml-tiny.bin": newModel = .whisperSmall
+            case "ggml-medium.bin": newModel = .whisperMedium
             case "ggml-large-v3.bin": newModel = .whisperLarge
-            default: newModel = .whisperMedium
+            default: newModel = .whisperSmall
             }
         case "fluidAudio":
             newModel = CPUArchitecture.isAppleSilicon ? .parakeetTDT : .appleSpeech

@@ -61,18 +61,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestAccessibilityPermissions() {
-        // Never show if already trusted
-        guard !AXIsProcessTrusted() else { return }
-
-        // Per-session debounce
-        if AXPromptState.hasPromptedThisSession { return }
-
-        // Cooldown: avoid re-prompting too often across launches
         let cooldownKey = "AXLastPromptAt"
+        let promptBuildKey = "AXLastPromptBuild"
         let now = Date().timeIntervalSince1970
-        let last = UserDefaults.standard.double(forKey: cooldownKey)
+        let defaults = UserDefaults.standard
+        let last = defaults.double(forKey: cooldownKey)
+        let lastPromptBuild = defaults.string(forKey: promptBuildKey)
+        let currentBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
         let oneDay: Double = 24 * 60 * 60
-        if last > 0, (now - last) < oneDay {
+
+        guard AccessibilityPromptPolicy.shouldPrompt(
+            isTrusted: AXIsProcessTrusted(),
+            hasPromptedThisSession: AXPromptState.hasPromptedThisSession,
+            now: now,
+            lastPromptAt: last,
+            lastPromptBuild: lastPromptBuild,
+            currentBuild: currentBuild,
+            cooldown: oneDay
+        ) else {
             return
         }
 
@@ -83,7 +89,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         AXIsProcessTrustedWithOptions(options)
 
         AXPromptState.hasPromptedThisSession = true
-        UserDefaults.standard.set(now, forKey: cooldownKey)
+        defaults.set(now, forKey: cooldownKey)
+        defaults.set(currentBuild, forKey: promptBuildKey)
 
         // If still not trusted shortly after, deep-link to the Accessibility pane for convenience
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -96,6 +103,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // MARK: - Session Debounce State
+
+enum AccessibilityPromptPolicy {
+    static func shouldPrompt(
+        isTrusted: Bool,
+        hasPromptedThisSession: Bool,
+        now: TimeInterval,
+        lastPromptAt: TimeInterval,
+        lastPromptBuild: String?,
+        currentBuild: String,
+        cooldown: TimeInterval
+    ) -> Bool {
+        guard !isTrusted, !hasPromptedThisSession else { return false }
+
+        let promptedRecently = lastPromptAt > 0 && (now - lastPromptAt) < cooldown
+        return !promptedRecently || lastPromptBuild != currentBuild
+    }
+}
 
 private enum AXPromptState {
     static var hasPromptedThisSession: Bool = false

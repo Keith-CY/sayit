@@ -14,15 +14,17 @@ final class DictationE2ETests: XCTestCase {
     private let selectedSpeechLanguageModeKey = "SelectedSpeechLanguageMode"
     private let selectedSpeechModelKey = "SelectedSpeechModel"
     private static let runWhisperE2EEnvKey = "RUN_WHISPER_E2E_TESTS"
+    private static let runAppleSpeechE2EEnvKey = "RUN_APPLE_SPEECH_E2E_TESTS"
+    private static let appleSpeechE2EAudioPathEnvKey = "APPLE_SPEECH_E2E_AUDIO_PATH"
     private static let runLlamaCppE2EEnvKey = "RUN_LLAMA_CPP_E2E_TESTS"
     private static let llamaCppBaseURLEnvKey = "LLAMA_CPP_BASE_URL"
     private static let llamaCppTestModelEnvKey = "LLAMA_CPP_TEST_MODEL"
 
     @MainActor
     func testAppVersion_displayNameIncludesBuildNumber() {
-        let version = AppVersion(marketingVersion: "1.6.0", buildNumber: "9")
+        let version = AppVersion(marketingVersion: "1.6.1", buildNumber: "10")
 
-        XCTAssertEqual(version.displayName, "1.6.0 (9)")
+        XCTAssertEqual(version.displayName, "1.6.1 (10)")
         XCTAssertEqual(
             AppVersion(marketingVersion: "Development", buildNumber: "").displayName,
             "Development"
@@ -144,7 +146,7 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
-    func testMixedChineseEnglishMode_selectsWhisper() {
+    func testMixedChineseEnglishMode_selectsBestLocalMixedLanguageEngine() {
         self.withRestoredDefaults(keys: [
             self.selectedSpeechLanguageModeKey,
             self.selectedSpeechModelKey,
@@ -155,8 +157,27 @@ final class DictationE2ETests: XCTestCase {
 
             settings.speechLanguageMode = .chineseEnglishMixed
 
-            XCTAssertEqual(settings.selectedSpeechModel, .whisperMedium)
+            if #available(macOS 26.0, *) {
+                XCTAssertEqual(settings.selectedSpeechModel, .appleSpeechAnalyzer)
+            } else {
+                XCTAssertEqual(settings.selectedSpeechModel, .whisperSmall)
+            }
         }
+    }
+
+    func testMixedChineseEnglishModePrioritizesSupportedChineseLocale() {
+        XCTAssertEqual(
+            SettingsStore.SpeechLanguageMode.chineseEnglishMixed.localeCandidates,
+            ["zh-CN", "zh-Hans-CN", "zh-Hans", "zh", "en-US", "en"]
+        )
+        XCTAssertEqual(
+            SettingsStore.SpeechLanguageMode.chineseSimplified.localeCandidates.first,
+            "zh-CN"
+        )
+        XCTAssertEqual(
+            SettingsStore.SpeechLanguageMode.chineseTraditional.localeCandidates.prefix(2),
+            ["zh-TW", "zh-HK"]
+        )
     }
 
     func testMixedChineseEnglishMode_preservesLargerWhisperSelection() {
@@ -172,6 +193,119 @@ final class DictationE2ETests: XCTestCase {
 
             XCTAssertEqual(settings.selectedSpeechModel, .whisperLarge)
         }
+    }
+
+    func testStartupPolicyLoadsCachedModelOnlyWhenNeeded() {
+        XCTAssertTrue(ASRStartupPolicy.shouldLoadCachedModel(isReady: false, modelsExistOnDisk: true))
+        XCTAssertFalse(ASRStartupPolicy.shouldLoadCachedModel(isReady: true, modelsExistOnDisk: true))
+        XCTAssertFalse(ASRStartupPolicy.shouldLoadCachedModel(isReady: false, modelsExistOnDisk: false))
+        XCTAssertTrue(
+            ASRStartupPolicy.isModelPreloadDisabled(
+                environment: [ASRStartupPolicy.disablePreloadEnvironmentKey: "1"]
+            )
+        )
+        XCTAssertFalse(ASRStartupPolicy.isModelPreloadDisabled(environment: [:]))
+    }
+
+    func testWhisperCoreMLSupportDerivesCompanionNames() {
+        XCTAssertEqual(
+            WhisperCoreMLSupport.compiledModelDirectoryName(for: "ggml-medium.bin"),
+            "ggml-medium-encoder.mlmodelc"
+        )
+        XCTAssertEqual(
+            WhisperCoreMLSupport.archiveName(for: "ggml-large-v3.bin"),
+            "ggml-large-v3-encoder.mlmodelc.zip"
+        )
+        XCTAssertEqual(
+            WhisperCoreMLSupport.compiledModelDirectoryName(for: "ggml-small-q5_1.bin"),
+            "ggml-small-encoder.mlmodelc"
+        )
+        XCTAssertNil(WhisperCoreMLSupport.archiveName(for: "unexpected-model"))
+    }
+
+    func testWhisperCoreMLSupportOnlyInstallsMissingAppleSiliconCompanion() {
+        XCTAssertTrue(
+            WhisperCoreMLSupport.shouldInstallCompanion(
+                isAppleSilicon: true,
+                compiledModelExists: false
+            )
+        )
+        XCTAssertFalse(
+            WhisperCoreMLSupport.shouldInstallCompanion(
+                isAppleSilicon: true,
+                compiledModelExists: true
+            )
+        )
+        XCTAssertFalse(
+            WhisperCoreMLSupport.shouldInstallCompanion(
+                isAppleSilicon: false,
+                compiledModelExists: false
+            )
+        )
+    }
+
+    @MainActor
+    func testRecordingControlPreparesAndStartsWhenModelIsMissing() {
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: false,
+                isReady: false,
+                isPreparingModel: false
+            ),
+            .prepareAndStart
+        )
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: false,
+                isReady: false,
+                isPreparingModel: true
+            ),
+            .waitForModel
+        )
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: false,
+                isReady: true,
+                isPreparingModel: false
+            ),
+            .start
+        )
+        XCTAssertEqual(
+            RecordingControlPolicy.action(
+                isRunning: true,
+                isReady: true,
+                isPreparingModel: false
+            ),
+            .stop
+        )
+    }
+
+    func testAccessibilityPromptCooldownDoesNotSuppressNewBuild() {
+        let now: TimeInterval = 10_000
+        let lastPromptAt: TimeInterval = 9_900
+
+        XCTAssertFalse(
+            AccessibilityPromptPolicy.shouldPrompt(
+                isTrusted: false,
+                hasPromptedThisSession: false,
+                now: now,
+                lastPromptAt: lastPromptAt,
+                lastPromptBuild: "9",
+                currentBuild: "9",
+                cooldown: 86_400
+            )
+        )
+        XCTAssertTrue(
+            AccessibilityPromptPolicy.shouldPrompt(
+                isTrusted: false,
+                hasPromptedThisSession: false,
+                now: now,
+                lastPromptAt: lastPromptAt,
+                lastPromptBuild: "9",
+                currentBuild: "10",
+                cooldown: 86_400
+            )
+        )
     }
 
     func testDefaultDictationPrompt_preservesMixedLanguages() {
@@ -260,8 +394,78 @@ final class DictationE2ETests: XCTestCase {
             throw XCTSkip("Skipping Whisper E2E test. Set \(Self.runWhisperE2EEnvKey)=1 to enable.")
         }
 
-        // Arrange
-        SettingsStore.shared.selectedSpeechModel = .whisperMedium
+        try await self.assertWhisperTranscribesFixture(model: .whisperMedium)
+    }
+
+    @MainActor
+    func testDictationEndToEnd_whisperSmall_transcribesFixture() async throws {
+        guard ProcessInfo.processInfo.environment[Self.runWhisperE2EEnvKey] == "1" else {
+            throw XCTSkip("Skipping Whisper E2E test. Set \(Self.runWhisperE2EEnvKey)=1 to enable.")
+        }
+
+        try await self.assertWhisperTranscribesFixture(model: .whisperSmall)
+    }
+
+    @MainActor
+    func testDictationEndToEnd_appleSpeechAnalyzer_transcribesFixture() async throws {
+        guard ProcessInfo.processInfo.environment[Self.runAppleSpeechE2EEnvKey] == "1" else {
+            throw XCTSkip("Skipping Apple Speech E2E test. Set \(Self.runAppleSpeechE2EEnvKey)=1 to enable.")
+        }
+        guard #available(macOS 26.0, *) else {
+            throw XCTSkip("Apple Speech Analyzer requires macOS 26 or newer.")
+        }
+
+        try await self.withRestoredDefaultsAsync(keys: [
+            self.selectedSpeechLanguageModeKey,
+            self.selectedSpeechModelKey,
+        ]) {
+            let settings = SettingsStore.shared
+            settings.speechLanguageMode = .chineseEnglishMixed
+            settings.selectedSpeechModel = .appleSpeechAnalyzer
+            let provider = AppleSpeechAnalyzerProvider()
+
+            try await provider.prepare(progressHandler: nil)
+            let externalAudioPath = ProcessInfo.processInfo.environment[
+                Self.appleSpeechE2EAudioPathEnvKey
+            ]
+            let samples: [Float]
+            if let externalAudioPath {
+                samples = try AudioFixtureLoader.load16kMonoFloatSamples(
+                    from: URL(fileURLWithPath: externalAudioPath)
+                )
+            } else {
+                samples = try AudioFixtureLoader.load16kMonoFloatSamples(
+                    named: "dictation_fixture",
+                    ext: "wav"
+                )
+            }
+            let result = try await provider.transcribe(samples)
+            let normalized = Self.normalize(result.text)
+
+            if externalAudioPath != nil {
+                XCTAssertTrue(
+                    result.text.unicodeScalars.contains(where: {
+                        (0x4E00 ... 0x9FFF).contains(Int($0.value))
+                    }),
+                    "Expected mixed-language engine to retain Chinese. Got: \(result.text)"
+                )
+                XCTAssertTrue(
+                    ["review", "pull", "request", "deploy", "staging"].contains(where: normalized.contains),
+                    "Expected mixed-language engine to retain English words. Got: \(result.text)"
+                )
+            } else {
+                XCTAssertTrue(
+                    normalized.contains("hello"),
+                    "Expected mixed-language engine to retain English. Got: \(result.text)"
+                )
+            }
+            XCTAssertFalse(normalized.isEmpty, "Expected non-empty Apple Speech transcription.")
+        }
+    }
+
+    @MainActor
+    private func assertWhisperTranscribesFixture(model: SettingsStore.SpeechModel) async throws {
+        SettingsStore.shared.selectedSpeechModel = model
         AnalyticsService.shared.setEnabled(false)
 
         let modelDirectory = Self.modelDirectoryForRun()
@@ -385,5 +589,30 @@ final class DictationE2ETests: XCTestCase {
         }
 
         run()
+    }
+
+    private func withRestoredDefaultsAsync(
+        keys: [String],
+        run: () async throws -> Void
+    ) async rethrows {
+        let defaults = UserDefaults.standard
+        var snapshot: [String: Any] = [:]
+        for key in keys {
+            if let value = defaults.object(forKey: key) {
+                snapshot[key] = value
+            }
+        }
+
+        defer {
+            for key in keys {
+                if let previous = snapshot[key] {
+                    defaults.set(previous, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        try await run()
     }
 }

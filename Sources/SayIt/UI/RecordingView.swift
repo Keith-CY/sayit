@@ -17,6 +17,14 @@ struct RecordingView: View {
     let stopAndProcessTranscription: () async -> Void
     let startRecording: () -> Void
 
+    private var recordingControlAction: RecordingControlAction {
+        RecordingControlPolicy.action(
+            isRunning: self.asr.isRunning,
+            isReady: self.asr.isAsrReady,
+            isPreparingModel: self.asr.isDownloadingModel || self.asr.isLoadingModel
+        )
+    }
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 14) {
@@ -55,18 +63,32 @@ struct RecordingView: View {
 
                             // Recording Control (Single Toggle Button)
                             Button(action: {
-                                if self.asr.isRunning {
+                                switch self.recordingControlAction {
+                                case .stop:
                                     Task {
                                         await self.stopAndProcessTranscription()
                                     }
-                                } else {
+                                case .start:
                                     self.startRecording()
+                                case .prepareAndStart:
+                                    Task {
+                                        do {
+                                            try await self.asr.ensureAsrReady()
+                                            self.startRecording()
+                                        } catch {
+                                            self.asr.errorTitle = "Voice Model Failed to Prepare"
+                                            self.asr.errorMessage = error.localizedDescription
+                                            self.asr.showError = true
+                                        }
+                                    }
+                                case .waitForModel:
+                                    break
                                 }
                             }) {
                                 HStack {
-                                    Image(systemName: self.asr.isRunning ? "stop.fill" : "mic.fill")
+                                    Image(systemName: self.recordingControlAction == .stop ? "stop.fill" : "mic.fill")
                                         .font(.system(size: 16, weight: .semibold))
-                                    Text(self.asr.isRunning ? "Stop Recording" : "Start Recording")
+                                    Text(self.recordingButtonTitle)
                                 }
                                 .frame(maxWidth: .infinity)
                             }
@@ -74,7 +96,7 @@ struct RecordingView: View {
                             .buttonHoverEffect()
                             .scaleEffect(self.asr.isRunning ? 1.05 : 1.0)
                             .animation(.spring(response: 0.3), value: self.asr.isRunning)
-                            .disabled(!self.asr.isAsrReady && !self.asr.isRunning)
+                            .disabled(self.recordingControlAction == .waitForModel)
                         }
                     }
                     .padding(14)
@@ -82,6 +104,19 @@ struct RecordingView: View {
                 .modifier(CardAppearAnimation(delay: 0.1, appear: self.$appear))
             }
             .padding(14)
+        }
+    }
+
+    private var recordingButtonTitle: String {
+        switch self.recordingControlAction {
+        case .start:
+            return "Start Recording"
+        case .stop:
+            return "Stop Recording"
+        case .prepareAndStart:
+            return "Start Recording"
+        case .waitForModel:
+            return "Preparing Voice Model…"
         }
     }
 }
