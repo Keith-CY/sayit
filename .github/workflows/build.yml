@@ -50,6 +50,9 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
+
+      - name: Install Metal compiler
+        run: xcodebuild -downloadComponent MetalToolchain
     
       - name: Show Xcode version
         run: xcodebuild -version
@@ -90,6 +93,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sayit-artifacts"
           ditto "$RUNNER_TEMP/SayIt.xcarchive/Products/Applications/SayIt.app" "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
           xattr -cr "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
+          bash scripts/verify-app-bundle.sh "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
           /usr/bin/codesign --force --deep --sign - --timestamp=none "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/sayit-artifacts/SayIt.app"
           ditto -c -k --sequesterRsrc --keepParent \

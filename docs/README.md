@@ -16,7 +16,8 @@ This folder contains reference notes for future work.
 - AI calls fail fast when provider base URL is empty.
 - Local endpoints may omit an API key; if one is configured, it is still sent for authenticated local/LAN gateways.
 - Optional dictation cleanup falls back to the raw transcript on provider failure or empty output.
-- `中文 + English (Mixed)` routes speech recognition to Whisper automatic language detection.
+- `中文 + English (Mixed)` preserves an explicitly selected Qwen or Whisper model. Otherwise it uses Apple Speech Analyzer on macOS 26+, or Whisper Small on earlier systems.
+- Qwen downloads the pinned `mlx-community/Qwen3-ASR-1.7B-8bit` files with size/checksum validation; the download and activation steps are separate. It uses local MLX inference after recording stops.
 
 ## Release Notes
 

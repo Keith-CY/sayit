@@ -197,6 +197,122 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testMixedChineseEnglishMode_preservesQwenAndRoutesToMLX() throws {
+        guard CPUArchitecture.isAppleSilicon else { throw XCTSkip("Qwen requires Apple Silicon.") }
+        self.withRestoredDefaults(keys: [self.selectedSpeechLanguageModeKey, self.selectedSpeechModelKey]) {
+            let settings = SettingsStore.shared
+            settings.speechLanguageMode = .chineseEnglishMixed
+            settings.selectedSpeechModel = .qwen3Asr
+            XCTAssertEqual(settings.selectedSpeechModel, .qwen3Asr)
+            XCTAssertTrue(SettingsStore.SpeechModel.availableModels.contains(.qwen3Asr))
+            XCTAssertTrue(ASRService().fileTranscriptionProvider is QwenASRProvider)
+
+            settings.speechLanguageMode = .english
+            XCTAssertEqual(settings.selectedSpeechModel, .qwen3Asr)
+            settings.speechLanguageMode = .auto
+            XCTAssertEqual(settings.selectedSpeechModel, .qwen3Asr)
+
+            settings.selectedSpeechModel = .whisperMedium
+            XCTAssertEqual(settings.selectedSpeechModel, .whisperMedium)
+            XCTAssertTrue(ASRService().fileTranscriptionProvider is WhisperProvider)
+        }
+    }
+
+    func testQwenInstallationRequiresCompletePinnedFilesAndDeletesOnlyItsDirectory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = QwenModelStore(directory: root.appendingPathComponent("qwen"))
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+        let neighbor = root.appendingPathComponent("another-model")
+        try Data("keep".utf8).write(to: neighbor)
+        XCTAssertFalse(store.isInstalled)
+
+        // Sparse files let us validate completeness without allocating/downloading model weights.
+        for file in QwenModelStore.files {
+            let url = store.directory.appendingPathComponent(file.name)
+            XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.truncate(atOffset: UInt64(file.size))
+            try handle.close()
+        }
+        XCTAssertFalse(store.isInstalled, "Files without a completed installation receipt must remain unavailable.")
+        let receipt = store.directory.appendingPathComponent("sayit-installation.json")
+        for revision in ["outdated", QwenModelStore.revision] {
+            try JSONSerialization.data(withJSONObject: [
+                "repository": QwenModelStore.repository,
+                "revision": revision,
+            ]).write(to: receipt)
+            XCTAssertEqual(store.isInstalled, revision == QwenModelStore.revision)
+        }
+        try FileManager.default.removeItem(at: store.directory.appendingPathComponent("tokenizer_config.json"))
+        XCTAssertFalse(store.isInstalled, "Missing tokenizer files must disable activation.")
+        try store.remove()
+        XCTAssertFalse(store.isInstalled)
+        XCTAssertEqual(try String(contentsOf: neighbor), "keep")
+    }
+
+    func testAppBundleContainsQwenMetalLibrary() throws {
+        guard CPUArchitecture.isAppleSilicon else { throw XCTSkip("Qwen requires Apple Silicon.") }
+        let resources = try XCTUnwrap(Bundle.main.resourceURL)
+        let library = resources.appendingPathComponent("mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib")
+        let attributes = try FileManager.default.attributesOfItem(atPath: library.path)
+        XCTAssertGreaterThan((attributes[.size] as? NSNumber)?.intValue ?? 0, 0)
+    }
+
+    @MainActor
+    func testDictationEndToEnd_qwenMLX_transcribesAndReloadsOffline() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["RUN_QWEN_E2E_TESTS"] == "1" else {
+            throw XCTSkip("Set RUN_QWEN_E2E_TESTS=1 to run the real Qwen model.")
+        }
+        guard CPUArchitecture.isAppleSilicon else { throw XCTSkip("Qwen requires Apple Silicon.") }
+        let directory = environment["QWEN_E2E_MODEL_DIRECTORY"].map { URL(fileURLWithPath: $0) }
+            ?? QwenModelStore.defaultDirectory
+        try await self.withRestoredDefaultsAsync(keys: [self.selectedSpeechLanguageModeKey, self.selectedSpeechModelKey]) {
+            let settings = SettingsStore.shared
+            settings.speechLanguageMode = .auto
+            settings.selectedSpeechModel = .whisperMedium
+            let provider = QwenASRProvider(modelDirectory: directory)
+            try await provider.download(progressHandler: nil)
+            XCTAssertEqual(settings.selectedSpeechModel, .whisperMedium, "Downloading must not switch the active model.")
+            XCTAssertFalse(provider.isReady, "Download-only must not load GPU weights.")
+            XCTAssertTrue(provider.modelsExistOnDisk())
+
+            settings.speechLanguageMode = .chineseEnglishMixed
+            settings.selectedSpeechModel = .qwen3Asr
+            // Reject fallback downloads; the runtime itself loads from the local directory.
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.connectionProxyDictionary = [
+                "HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": 9,
+                "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 9,
+            ]
+            let offlineProvider = QwenASRProvider(modelDirectory: directory, session: URLSession(configuration: configuration))
+            try await offlineProvider.prepare(progressHandler: nil)
+            XCTAssertTrue(offlineProvider.isReady)
+
+            let audioPath = environment["QWEN_E2E_AUDIO_PATH"]
+            let samples = try audioPath.map { try AudioFixtureLoader.load16kMonoFloatSamples(from: URL(fileURLWithPath: $0)) }
+                ?? AudioFixtureLoader.load16kMonoFloatSamples(named: "dictation_fixture", ext: "wav")
+            let started = Date()
+            let result = try await offlineProvider.transcribeFinal(samples)
+            print("QWEN_E2E_TRANSCRIPT=\(result.text)")
+            print("QWEN_E2E_SECONDS=\(Date().timeIntervalSince(started)) AUDIO_SECONDS=\(Double(samples.count) / 16000)")
+            let normalized = Self.normalize(result.text)
+            XCTAssertFalse(normalized.isEmpty)
+            if audioPath != nil {
+                XCTAssertTrue(result.text.unicodeScalars.contains { (0x4E00 ... 0x9FFF).contains(Int($0.value)) })
+                for term in ["review", "pull", "request", "deploy", "staging"] {
+                    XCTAssertTrue(normalized.contains(term), "Missing English term '\(term)' in: \(result.text)")
+                }
+            } else {
+                XCTAssertTrue(normalized.contains("hello"))
+            }
+            let silent = try await offlineProvider.transcribeFinal([Float](repeating: 0, count: 16000))
+            XCTAssertEqual(silent.text, "")
+        }
+    }
+
     func testStartupPolicyLoadsCachedModelOnlyWhenNeeded() {
         XCTAssertTrue(ASRStartupPolicy.shouldLoadCachedModel(isReady: false, modelsExistOnDisk: true))
         XCTAssertFalse(ASRStartupPolicy.shouldLoadCachedModel(isReady: true, modelsExistOnDisk: true))

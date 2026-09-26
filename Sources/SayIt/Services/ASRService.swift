@@ -137,6 +137,7 @@ final class ASRService: ObservableObject {
     /// Cached providers to avoid re-instantiation
     private var fluidAudioProvider: FluidAudioProvider?
     private var whisperProvider: WhisperProvider?
+    private var qwenProvider: QwenASRProvider?
     private var appleSpeechProvider: AppleSpeechProvider?
     /// Stored as Any? because @available cannot be applied to stored properties
     private var _appleSpeechAnalyzerProvider: Any?
@@ -192,11 +193,7 @@ final class ASRService: ObservableObject {
         case .parakeetTDT:
             return self.getFluidAudioProvider()
         case .qwen3Asr:
-            DebugLogger.shared.warning(
-                "ASRService: Qwen provider removed; falling back to FluidAudio Parakeet path",
-                source: "ASRService"
-            )
-            return self.getFluidAudioProvider()
+            return self.getQwenProvider()
         default:
             return self.getWhisperProvider()
         }
@@ -214,6 +211,13 @@ final class ASRService: ObservableObject {
             "ASRService: Created FluidAudio provider [vocabBoosting=\(SettingsStore.shared.vocabularyBoostingEnabled)]",
             source: "ASRService"
         )
+        return provider
+    }
+
+    private func getQwenProvider() -> QwenASRProvider {
+        if let existing = self.qwenProvider { return existing }
+        let provider = QwenASRProvider()
+        self.qwenProvider = provider
         return provider
     }
 
@@ -276,8 +280,7 @@ final class ASRService: ObservableObject {
             let provider = FluidAudioProvider(modelOverride: model, configureWordBoosting: false)
             return provider
         case .qwen3Asr:
-            // Qwen support removed; route legacy requests to Parakeet v3.
-            return FluidAudioProvider(modelOverride: .parakeetTDT, configureWordBoosting: false)
+            return QwenASRProvider()
         default:
             // Whisper models - create provider with specific model override
             let provider = WhisperProvider(modelOverride: model)
@@ -305,7 +308,7 @@ final class ASRService: ObservableObject {
                 let provider = await MainActor.run { self.getProvider(for: model) }
 
                 // Prepare (download) the model
-                try await provider.prepare(progressHandler: { progress in
+                try await provider.download(progressHandler: { progress in
                     let clamped = max(0.0, min(1.0, progress))
                     progressHandler?(clamped)
                 })
@@ -351,6 +354,7 @@ final class ASRService: ObservableObject {
         // Reset cached providers to force re-initialization with new settings
         self.fluidAudioProvider = nil
         self.whisperProvider = nil
+        self.qwenProvider = nil
         self.appleSpeechProvider = nil
         self._appleSpeechAnalyzerProvider = nil
 

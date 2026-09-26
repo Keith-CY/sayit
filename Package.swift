@@ -16,6 +16,8 @@ let package = Package(
             .upToNextMinor(from: "0.12.6")
         ),
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4"),
+        .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", revision: "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.4"),
     ],
     targets: [
         .executableTarget(
@@ -25,6 +27,8 @@ let package = Package(
                 "SwiftWhisper",
                 "FluidAudio",
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
+                .product(name: "MLX", package: "mlx-swift"),
             ],
             path: "Sources/SayIt",
             resources: [

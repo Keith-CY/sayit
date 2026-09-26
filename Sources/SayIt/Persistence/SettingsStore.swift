@@ -1948,11 +1948,7 @@ final class SettingsStore: ObservableObject {
     /// Unified speech recognition model selection.
     /// Replaces the old TranscriptionProviderOption + WhisperModelSize dual-setting.
     enum SpeechModel: String, CaseIterable, Identifiable, Codable {
-        // Temporarily disabled in UI/runtime while Parakeet word boosting work is prioritized.
-        // Flip to `true` in a future round to re-enable Qwen without deleting implementation.
-        static let qwenPreviewEnabled = false
-
-        // MARK: - FluidAudio Models (Apple Silicon Only)
+        // MARK: - Local Models (Apple Silicon Only)
 
         case parakeetTDT = "parakeet-tdt"
         case qwen3Asr = "qwen3-asr"
@@ -1976,7 +1972,7 @@ final class SettingsStore: ObservableObject {
         var displayName: String {
             switch self {
             case .parakeetTDT: return "Parakeet TDT v3 (Multilingual)"
-            case .qwen3Asr: return "Qwen3 ASR (Beta)"
+            case .qwen3Asr: return "Qwen3-ASR 1.7B · 8bit"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
             case .whisperSmall: return "Whisper Small"
@@ -2000,7 +1996,7 @@ final class SettingsStore: ObservableObject {
         /// Whether this model can reliably handle Chinese speech.
         var supportsChinese: Bool {
             switch self {
-            case .parakeetTDT, .qwen3Asr:
+            case .parakeetTDT:
                 return false
             default:
                 return true
@@ -2010,7 +2006,7 @@ final class SettingsStore: ObservableObject {
         var downloadSize: String {
             switch self {
             case .parakeetTDT: return "~500 MB"
-            case .qwen3Asr: return "~2.0 GB"
+            case .qwen3Asr: return "~2.47 GB"
             case .appleSpeech: return "Built-in (Zero Download)"
             case .appleSpeechAnalyzer: return "Built-in"
             case .whisperSmall: return CPUArchitecture.isAppleSilicon ? "~360 MB" : "~190 MB"
@@ -2067,20 +2063,12 @@ final class SettingsStore: ObservableObject {
         }
 
         /// Requires macOS 15 or later.
-        var requiresMacOS15: Bool {
-            switch self {
-            case .qwen3Asr: return true
-            default: return false
-            }
-        }
+        var requiresMacOS15: Bool { false }
 
         /// Returns models available for the current Mac's architecture and OS
         static var availableModels: [SpeechModel] {
             allCases.filter { model in
                 if model == .whisperLargeTurbo {
-                    return false
-                }
-                if model == .qwen3Asr, !Self.qwenPreviewEnabled {
                     return false
                 }
                 // Filter by Apple Silicon requirement
@@ -2124,7 +2112,7 @@ final class SettingsStore: ObservableObject {
         var humanReadableName: String {
             switch self {
             case .parakeetTDT: return "Blazing Fast - Multilingual"
-            case .qwen3Asr: return "Qwen3 - Multilingual"
+            case .qwen3Asr: return "Chinese + English Dictation"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Fast On-Device Dictation - Recommended"
             case .whisperSmall: return "Private Multilingual Fallback"
@@ -2140,7 +2128,7 @@ final class SettingsStore: ObservableObject {
             case .parakeetTDT:
                 return "Fast multilingual transcription with 25 languages. Best for everyday use."
             case .qwen3Asr:
-                return "Qwen3 multilingual ASR via FluidAudio. Higher quality, heavier memory footprint."
+                return "Local Chinese and English transcription, including mixed speech. Text appears after recording stops."
             case .appleSpeech:
                 return "Built-in macOS speech recognition. No download required."
             case .appleSpeechAnalyzer:
@@ -2180,7 +2168,7 @@ final class SettingsStore: ObservableObject {
         var memoryWarning: String? {
             switch self {
             case .qwen3Asr:
-                return "⚠️ Requires 8GB+ RAM. Best on newer Apple Silicon Macs."
+                return "Uses several GB of memory while loaded. Requires Apple Silicon."
             case .whisperLarge:
                 return "⚠️ Requires 10GB+ RAM. May crash on systems with limited memory."
             case .whisperLargeTurbo:
@@ -2254,7 +2242,7 @@ final class SettingsStore: ObservableObject {
         var badgeText: String? {
             switch self {
             case .parakeetTDT: return AppIdentity.parakeetBrandBadge
-            case .qwen3Asr: return "Beta"
+            case .qwen3Asr: return "MLX 8bit"
             case .appleSpeechAnalyzer: return "Recommended"
             case .whisperSmall: return "Offline"
             default: return nil
@@ -2318,7 +2306,7 @@ final class SettingsStore: ObservableObject {
                 // Hardcoded path check for NVIDIA v3
                 return Self.parakeetCacheDirectory(version: "parakeet-tdt-0.6b-v3-coreml")
             case .qwen3Asr:
-                return false
+                return QwenModelStore().isInstalled
             default:
                 // Whisper models
                 guard let whisperFile = self.whisperModelFile else { return false }
@@ -2620,7 +2608,7 @@ extension SettingsStore {
 
     private func normalizedSpeechModel(_ model: SpeechModel) -> SpeechModel {
         if self.speechLanguageMode == .chineseEnglishMixed {
-            if model.isWhisperModel {
+            if model.isWhisperModel || model == .qwen3Asr {
                 return model
             }
             if #available(macOS 26.0, *),
@@ -2653,10 +2641,6 @@ extension SettingsStore {
             if let rawValue = defaults.string(forKey: Keys.selectedSpeechModel),
                let model = SpeechModel(rawValue: rawValue)
             {
-                // If Qwen was previously selected, transparently fall back while preview is disabled.
-                if model == .qwen3Asr, !SpeechModel.qwenPreviewEnabled {
-                    return SpeechModel.defaultModel
-                }
                 if model.requiresAppleSilicon && !CPUArchitecture.isAppleSilicon {
                     return SpeechModel.defaultModel
                 }

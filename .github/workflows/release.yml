@@ -27,6 +27,9 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Install Metal compiler
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Install build tools
         run: |
           brew install swiftlint
@@ -152,7 +155,7 @@ jobs:
           archive_name="SayIt-v${{ steps.version.outputs.version }}-arm64.zip"
           archive_path="$release_directory/$archive_name"
 
-          test -d "$app_path/Contents/Frameworks/Sparkle.framework"
+          bash scripts/verify-app-bundle.sh "$app_path"
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 
           signature_details="$(/usr/bin/codesign -d --verbose=4 "$app_path" 2>&1)"

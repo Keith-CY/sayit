@@ -22,7 +22,7 @@ Accessibility can survive an in-place update.
 This protects the update path from a replaced archive or feed, but it does not
 make the self-signed certificate Apple-trusted, notarize the app, or provide a
 Developer ID identity. The first installation must therefore be approved
-manually in macOS. Once 1.6.1 or later is installed, Sparkle can update it in
+manually in macOS. Once 1.7.0 or later is installed, Sparkle can update it in
 place while retaining the same local code identity.
 
 ## Required GitHub secrets
@@ -63,6 +63,11 @@ The `Publish GitHub Release` workflow then:
 7. Generates and verifies a signed Sparkle `appcast.xml`.
 8. Publishes both files in the GitHub Release.
 
+Build and release jobs install Xcode's Metal compiler and run
+`scripts/verify-app-bundle.sh` before packaging. The check requires the embedded
+MLX `default.metallib`, the Qwen integration in the executable, and Sparkle;
+an app that builds but cannot load the bundled MLX runtime must not be released.
+
 The stable in-app feed URL is:
 
 `https://github.com/Keith-CY/sayit/releases/latest/download/appcast.xml`
@@ -73,11 +78,11 @@ supported update chain.
 
 ## First release and recovery
 
-Version 1.6.0 introduced Sparkle. Version 1.6.1 introduces the stable macOS code
+Version 1.6.0 introduced Sparkle. Version 1.7.0 introduces the stable macOS code
 identity. A 1.6.0 installation can update through Sparkle, but users may need to
 approve privacy permissions once more after that identity transition. Fresh
-installs should start with 1.6.1 or later. Validate the next release by updating
-from 1.6.1 through the app and confirming that privacy permissions persist
+installs should start with 1.7.0 or later. Validate the next release by updating
+from 1.7.0 through the app and confirming that privacy permissions persist
 before calling the chain production-ready.
 
 Do not casually rotate either identity. Losing or replacing the EdDSA private

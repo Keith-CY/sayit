@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D27000100000000000000001 /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = D27000100000000000000003 /* MLXAudioSTT */; };
+		D27000100000000000000002 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = D27000100000000000000004 /* MLX */; };
 		7C078DA52E3B386A00FB7CAC /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = 7C078DA42E3B386A00FB7CAC /* FluidAudio */; };
 		7C1C72F22EECBD1300E3BF4D /* SwiftWhisper in Frameworks */ = {isa = PBXBuildFile; productRef = 7C1C72F12EECBD1300E3BF4D /* SwiftWhisper */; };
 		7C3697892ED70F9C005874CE /* DynamicNotchKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7C3697882ED70F9C005874CE /* DynamicNotchKit */; };
@@ -50,6 +52,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1B2C3D4E5F60718293A4B5C /* Sparkle in Frameworks */,
+				D27000100000000000000001 /* MLXAudioSTT in Frameworks */,
+				D27000100000000000000002 /* MLX in Frameworks */,
 				7C3697892ED70F9C005874CE /* DynamicNotchKit in Frameworks */,
 				7C1C72F22EECBD1300E3BF4D /* SwiftWhisper in Frameworks */,
 				7C078DA52E3B386A00FB7CAC /* FluidAudio in Frameworks */,
@@ -151,6 +155,8 @@
 				7C3697882ED70F9C005874CE /* DynamicNotchKit */,
 				7C1C72F12EECBD1300E3BF4D /* SwiftWhisper */,
 				C1D2E3F40516273849A5B6C7 /* Sparkle */,
+				D27000100000000000000003 /* MLXAudioSTT */,
+				D27000100000000000000004 /* MLX */,
 			);
 			productName = SayIt;
 			productReference = 7C078D8F2E3B339200FB7CAC /* SayIt.app */;
@@ -206,6 +212,8 @@
 				7C3697872ED70F9C005874CE /* XCRemoteSwiftPackageReference "DynamicNotchKit" */,
 				7C1C72F02EECBD1300E3BF4D /* XCRemoteSwiftPackageReference "SwiftWhisper" */,
 				B1C2D3E4F5061728394A5B6C /* XCRemoteSwiftPackageReference "Sparkle" */,
+				D27000100000000000000005 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */,
+				D27000100000000000000006 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 7C078D902E3B339200FB7CAC /* Products */;
@@ -399,7 +407,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = V4J43B279J;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_CODE_COVERAGE = NO;
@@ -427,7 +435,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.6.1;
+				MARKETING_VERSION = 1.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sayit.app;
 				PRODUCT_NAME = SayIt;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -453,7 +461,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = V4J43B279J;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_CODE_COVERAGE = NO;
@@ -481,7 +489,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.6.1;
+				MARKETING_VERSION = 1.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sayit.app;
 				PRODUCT_NAME = SayIt;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -611,6 +619,22 @@
 				version = 2.9.4;
 			};
 		};
+		D27000100000000000000005 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Blaizzy/mlx-audio-swift.git";
+			requirement = {
+				kind = revision;
+				revision = 01dec7c9bdce3088a6b6b7ab9f2e403458195efb;
+			};
+		};
+		D27000100000000000000006 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.31.4;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -633,6 +657,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B1C2D3E4F5061728394A5B6C /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		D27000100000000000000003 /* MLXAudioSTT */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D27000100000000000000005 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			productName = MLXAudioSTT;
+		};
+		D27000100000000000000004 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D27000100000000000000006 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

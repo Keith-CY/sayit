@@ -9,7 +9,7 @@ Download: [latest release](https://github.com/Keith-CY/sayit/releases/latest)
 - Global hotkey to start/stop recording.
 - System tray / menu bar control with lightweight waveform status.
 - Live dictation preview.
-- Multiple local speech backends (Apple Speech, Whisper, Parakeet).
+- Multiple local speech backends (Apple Speech, MLX Qwen3-ASR, Whisper, Parakeet).
 - Direct paste into the active app after transcription.
 - Optional AI post-processing for refined text output.
 
@@ -40,10 +40,20 @@ For Chinese dictation that includes English names, product terms, or technical p
 
 1. Open `Settings` -> `Voice Engine`.
 2. Set `Speech Language` to `中文 + English (Mixed)`.
-3. SayIt selects Whisper Medium automatically. The first use downloads about 1.5 GB.
-4. Keep AI Enhancement off for literal transcription, or enable it only when you want cleanup.
+3. In the model downloads, select **Qwen3-ASR 1.7B · 8bit** and click **Download** (about 2.47 GB).
+4. Once the download finishes, click **Activate**. Downloading alone does not change the active model.
+5. Keep AI Enhancement off for literal transcription, or enable it only when you want cleanup.
 
-Mixed mode uses Whisper's automatic language recognition for the whole utterance. Results still depend on pronunciation, microphone quality, and the model; it is not a guarantee that every embedded English word will be preserved.
+Qwen uses [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit)
+on Apple Silicon, with the MLX runtime included in SayIt. No Python installation or
+inference server is needed. After downloading, transcription uses local files and
+text appears when recording stops. Mixed mode preserves an explicitly selected
+Qwen or Whisper model; without that selection, it defaults to Apple Speech
+Analyzer on macOS 26+, or Whisper Small on earlier macOS versions.
+
+Recognition still depends on pronunciation, microphone quality, and vocabulary.
+Models are stored under `~/Library/Application Support/SayIt/Models/` for Qwen;
+an incomplete or damaged download is not offered for activation.
 
 ## OpenAI-Compatible Providers
 
@@ -79,8 +89,9 @@ day by default, but it never installs without confirmation.
 Both the update feed and downloaded archive are verified with SayIt's Sparkle
 EdDSA key. Release builds use a stable self-signed macOS identity so updates
 retain the same local code identity and privacy grants; they are not signed by
-Apple or notarized. Version 1.6.1 is the one-time manual bootstrap; future
-releases can update in place.
+Apple or notarized. Version 1.7.0 is the first published release with this stable
+code identity. Updating from 1.6.0 can require granting permissions once more;
+subsequent releases retain the same identity.
 
 Maintainer details: [GitHub update and release process](docs/GITHUB_UPDATES.md).
 
@@ -98,6 +109,17 @@ Or run from CLI:
 ./build.sh
 LAUNCH_APP=1 ./build.sh
 ```
+
+The MLX integration requires Swift 6.2 or newer. Install Xcode's Metal compiler
+with `xcodebuild -downloadComponent MetalToolchain` if it is not already present.
+Both package lockfiles pin the tested dependencies.
+
+The regular Xcode test suite checks model selection, installation completeness,
+and the bundled Metal library without downloading weights. To run the real Qwen
+transcription test, set `TEST_RUNNER_RUN_QWEN_E2E_TESTS=1` when running `xcodebuild test`.
+Optional `TEST_RUNNER_QWEN_E2E_MODEL_DIRECTORY` and `TEST_RUNNER_QWEN_E2E_AUDIO_PATH`
+select an existing model directory and a mixed-language audio fixture. The mixed
+fixture used for validation says: “请帮我 review 这个 pull request，然后 deploy 到 staging。”
 
 ## Privacy
 
