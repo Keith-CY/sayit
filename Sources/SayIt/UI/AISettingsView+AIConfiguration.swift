@@ -910,7 +910,7 @@ extension AIEnhancementSettingsView {
             if let name {
                 Image(name)
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
+                    .scaledToFit()
                     .frame(width: 26, height: 26)
             } else {
                 Text(self.providerInitials(for: item))
