@@ -76,7 +76,7 @@ jobs:
       - name: Archive macOS App
         run: |
           set -o pipefail
-          xcodebuild clean archive \
+          xcodebuild archive \
             -project SayIt.xcodeproj \
             -scheme SayIt \
             -destination 'platform=macOS,arch=arm64' \

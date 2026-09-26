@@ -14,7 +14,7 @@ if [[ ! -s "${METAL_LIBRARY}" ]]; then
     exit 1
 fi
 
-/usr/bin/lipo -verify_arch arm64 "${APP_BINARY}"
+/usr/bin/lipo "${APP_BINARY}" -verify_arch arm64
 if ! LC_ALL=C /usr/bin/grep -a -q -F 'mlx-community/Qwen3-ASR-1.7B-8bit' "${APP_BINARY}"; then
     echo "The app binary does not contain the expected Qwen model integration."
     exit 1
