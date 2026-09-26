@@ -2319,7 +2319,7 @@ struct BottomOverlayView: View {
                             if let appIcon = appIcon {
                                 Image(nsImage: appIcon)
                                     .resizable()
-                                    .aspectRatio(contentMode: .fit)
+                                    .scaledToFit()
                                     .frame(width: self.layout.iconSize, height: self.layout.iconSize)
                                     .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
                             }

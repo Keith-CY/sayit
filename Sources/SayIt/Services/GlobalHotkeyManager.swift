@@ -200,30 +200,38 @@ final class GlobalHotkeyManager: NSObject {
         self.cancelCallback = callback
     }
 
-    private func setupGlobalHotkeyWithRetry() {
-        for attempt in 1...self.maxRetryAttempts {
-            DebugLogger.shared.debug("Setup attempt \(attempt)/\(self.maxRetryAttempts)", source: "GlobalHotkeyManager")
-
-            if self.setupGlobalHotkey() {
-                self.isInitialized = true
-                DebugLogger.shared.info("Successfully initialized on attempt \(attempt)", source: "GlobalHotkeyManager")
-                self.startHealthCheckTimer()
-                return
-            }
-
-            if attempt < self.maxRetryAttempts {
-                DebugLogger.shared.warning("Attempt \(attempt) failed, retrying in \(self.retryDelay) seconds...", source: "GlobalHotkeyManager")
-                Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: UInt64((self?.retryDelay ?? 0.5) * 1_000_000_000))
-                    await MainActor.run { [weak self] in
-                        self?.setupGlobalHotkeyWithRetry()
-                    }
-                }
-                return
-            }
+    private func setupGlobalHotkeyWithRetry(attempt: Int = 1) {
+        guard AXIsProcessTrusted() else {
+            self.isInitialized = false
+            DebugLogger.shared.warning(
+                "Accessibility permission missing; waiting for authorization before initializing hotkeys",
+                source: "GlobalHotkeyManager"
+            )
+            return
         }
 
-        DebugLogger.shared.error("Failed to initialize after \(self.maxRetryAttempts) attempts", source: "GlobalHotkeyManager")
+        DebugLogger.shared.debug("Setup attempt \(attempt)/\(self.maxRetryAttempts)", source: "GlobalHotkeyManager")
+
+        if self.setupGlobalHotkey() {
+            self.isInitialized = true
+            DebugLogger.shared.info("Successfully initialized on attempt \(attempt)", source: "GlobalHotkeyManager")
+            self.startHealthCheckTimer()
+            return
+        }
+
+        guard attempt < self.maxRetryAttempts else {
+            self.isInitialized = false
+            DebugLogger.shared.error("Failed to initialize after \(self.maxRetryAttempts) attempts", source: "GlobalHotkeyManager")
+            return
+        }
+
+        DebugLogger.shared.warning("Attempt \(attempt) failed, retrying in \(self.retryDelay) seconds...", source: "GlobalHotkeyManager")
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((self?.retryDelay ?? 0.5) * 1_000_000_000))
+            await MainActor.run { [weak self] in
+                self?.setupGlobalHotkeyWithRetry(attempt: attempt + 1)
+            }
+        }
     }
 
     @discardableResult

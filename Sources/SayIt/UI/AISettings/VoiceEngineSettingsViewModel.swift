@@ -67,6 +67,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             models = models.filter { $0.provider == .apple }
         case .openai:
             models = models.filter { $0.provider == .openai }
+        case .qwen:
+            models = models.filter { $0.provider == .qwen }
         }
 
         if self.englishOnlyFilter {
@@ -106,6 +108,9 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
                 try await self.asr.ensureAsrReady()
             } catch {
                 DebugLogger.shared.error("Failed to prepare model after activation: \(error)", source: "AISettingsView")
+                self.asr.errorTitle = "Model Could Not Load"
+                self.asr.errorMessage = error.localizedDescription
+                self.asr.showError = true
             }
         }
     }
@@ -134,6 +139,12 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
                 })
 
                 DebugLogger.shared.info("Model download completed: \(model.displayName)", source: "VoiceEngineVM")
+
+                if self.settings.selectedSpeechModel == model {
+                    self.asr.resetTranscriptionProvider()
+                    try await self.asr.ensureAsrReady()
+                    DebugLogger.shared.info("Downloaded active model is ready", source: "VoiceEngineVM")
+                }
             } catch {
                 DebugLogger.shared.error("Failed to download model \(model.displayName): \(error)", source: "VoiceEngineVM")
                 await MainActor.run {
@@ -194,7 +205,7 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         case .parakeetTDT:
             return "Parakeet TDT v3 uses CoreML and Neural Engine for fastest transcription (25 languages) on Apple Silicon."
         case .qwen3Asr:
-            return "Qwen3 ASR is a multilingual FluidAudio model with strong quality, but higher memory usage. Requires macOS 15+."
+            return "Qwen3-ASR 1.7B runs locally on Apple Silicon. Supports Chinese, English, and mixed speech; transcribes when recording stops."
         default:
             return "Whisper models support 99 languages and work on any Mac."
         }

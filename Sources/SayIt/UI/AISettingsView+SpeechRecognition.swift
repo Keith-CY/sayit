@@ -231,25 +231,31 @@ extension VoiceEngineSettingsView {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 16) {
-                    LiquidBar(
-                        fillPercent: model.speedPercent,
-                        color: .yellow,
-                        secondaryColor: .orange,
-                        icon: "bolt.fill",
-                        label: "Speed"
-                    )
+                if model == .qwen3Asr {
+                    Label("After recording", systemImage: "text.bubble")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 16) {
+                        LiquidBar(
+                            fillPercent: model.speedPercent,
+                            color: .yellow,
+                            secondaryColor: .orange,
+                            icon: "bolt.fill",
+                            label: "Speed"
+                        )
 
-                    LiquidBar(
-                        fillPercent: model.accuracyPercent,
-                        color: Color.fluidGreen,
-                        secondaryColor: .cyan,
-                        icon: "target",
-                        label: "Accuracy"
-                    )
+                        LiquidBar(
+                            fillPercent: model.accuracyPercent,
+                            color: Color.fluidGreen,
+                            secondaryColor: .cyan,
+                            icon: "target",
+                            label: "Accuracy"
+                        )
+                    }
+                    .frame(width: 140, alignment: .center)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.7), value: model.id)
                 }
-                .frame(width: 140, alignment: .center)
-                .animation(.spring(response: 0.5, dampingFraction: 0.7), value: model.id)
             }
 
             if supportsParakeetCustomWords {
@@ -290,6 +296,7 @@ extension VoiceEngineSettingsView {
     func speechModelCard(for model: SettingsStore.SpeechModel) -> some View {
         let isSelected = self.viewModel.previewSpeechModel == model
         let isActive = self.viewModel.isActiveSpeechModel(model)
+        let showsDownload = isSelected || model == .qwen3Asr
 
         return HStack(alignment: .top, spacing: 10) {
             Circle()
@@ -312,22 +319,28 @@ extension VoiceEngineSettingsView {
                     .foregroundStyle(.secondary.opacity(0.7))
 
                 HStack(spacing: 10) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.yellow)
-                        Text("Speed \(Int(model.speedPercent * 100))%")
+                    if model == .qwen3Asr {
+                        Text("On-device · After recording")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    }
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.yellow)
+                            Text("Speed \(Int(model.speedPercent * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
-                    HStack(spacing: 4) {
-                        Image(systemName: "target")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Color.fluidGreen)
-                        Text("Acc \(Int(model.accuracyPercent * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                            Image(systemName: "target")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.fluidGreen)
+                            Text("Acc \(Int(model.accuracyPercent * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     if isSelected && !isActive {
@@ -412,7 +425,7 @@ extension VoiceEngineSettingsView {
                     Text("Not downloaded")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .opacity(isSelected ? 0 : 1)
+                        .opacity(showsDownload ? 0 : 1)
 
                     Button("Download") {
                         self.viewModel.previewSpeechModel = model
@@ -422,8 +435,8 @@ extension VoiceEngineSettingsView {
                     .controlSize(.small)
                     .tint(.blue)
                     .disabled(self.viewModel.asr.isRunning || self.viewModel.downloadingModel != nil)
-                    .offset(x: isSelected ? 0 : 16)
-                    .opacity(isSelected ? 1 : 0)
+                    .offset(x: showsDownload ? 0 : 16)
+                    .opacity(showsDownload ? 1 : 0)
                 }
                 .frame(width: 120, alignment: .trailing)
             }
@@ -447,6 +460,7 @@ extension VoiceEngineSettingsView {
         .onTapGesture {
             self.viewModel.previewSpeechModel = model
         }
+        .accessibilityElement(children: .contain)
         .opacity(self.viewModel.asr.isRunning ? 0.6 : 1.0)
         .allowsHitTesting(!self.viewModel.asr.isRunning)
     }
@@ -491,10 +505,10 @@ extension VoiceEngineSettingsView {
             }
 
             if currentMode == .chineseEnglishMixed {
-                Text("Mixed mode uses Whisper automatic language recognition so English can remain embedded in Chinese dictation.")
+                Text("For speech that mixes Chinese and English. Select Qwen or Whisper above to use that model.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Whisper Medium (~1.5 GB) is selected automatically unless you already use a larger Whisper model.")
+                Text("Your selected Qwen or Whisper model is kept when you switch to mixed mode.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else if currentMode.isAutomatic {
@@ -556,6 +570,17 @@ extension VoiceEngineSettingsView {
             } else if self.viewModel.asr.modelsExistOnDisk {
                 Image(systemName: "doc.fill").foregroundStyle(self.theme.palette.accent).font(.caption)
                 Text("Cached").font(.caption).foregroundStyle(.secondary)
+
+                Button(action: { Task { await self.viewModel.downloadModels() } }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.fill")
+                        Text("Load")
+                    }
+                    .font(.caption)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(Color.fluidGreen)
 
                 Button(action: { Task { await self.viewModel.deleteModels() } }) {
                     HStack(spacing: 4) {
@@ -628,7 +653,7 @@ extension VoiceEngineSettingsView {
             } else if let imageName {
                 Image(imageName)
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
+                    .scaledToFit()
                     // NVIDIA logo larger to fill more of the container
                     .frame(width: isNvidia ? 24 : 18, height: isNvidia ? 24 : 18)
             } else {

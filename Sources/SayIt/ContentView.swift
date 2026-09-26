@@ -540,6 +540,8 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            self.asr.refreshMicAuthorizationStatus()
+
             let trusted = AXIsProcessTrusted()
             if trusted != self.accessibilityEnabled {
                 self.accessibilityEnabled = trusted
@@ -2163,8 +2165,39 @@ struct ContentView: View {
     // MARK: - ASR Model Preloading
 
     private func preloadASRModel() async {
-        // DEPRECATED: No longer auto-loads on startup - models downloaded manually
-        DebugLogger.shared.debug("Skipping auto-preload - models downloaded manually via UI", source: "ContentView")
+        guard !ASRStartupPolicy.isModelPreloadDisabled(
+            environment: ProcessInfo.processInfo.environment
+        ) else {
+            DebugLogger.shared.debug("Skipping startup model load for tests", source: "ContentView")
+            return
+        }
+
+        await self.asr.checkIfModelsExistAsync()
+
+        guard ASRStartupPolicy.shouldLoadCachedModel(
+            isReady: self.asr.isAsrReady,
+            modelsExistOnDisk: self.asr.modelsExistOnDisk
+        ) else {
+            DebugLogger.shared.debug(
+                "Skipping startup model load - no cached model needs preparation",
+                source: "ContentView"
+            )
+            return
+        }
+
+        DebugLogger.shared.info("Loading cached speech model on startup", source: "ContentView")
+        do {
+            try await self.asr.ensureAsrReady()
+            DebugLogger.shared.info("Cached speech model is ready", source: "ContentView")
+        } catch {
+            DebugLogger.shared.error(
+                "Failed to load cached speech model: \(error.localizedDescription)",
+                source: "ContentView"
+            )
+            self.asr.errorTitle = "Voice Model Failed to Load"
+            self.asr.errorMessage = error.localizedDescription
+            self.asr.showError = true
+        }
     }
 
     // MARK: - Model Management
@@ -2261,7 +2294,14 @@ struct ContentView: View {
 
     private func openAccessibilitySettings() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+        AccessibilityPermissionAction.perform(
+            prompt: {
+                _ = AXIsProcessTrustedWithOptions(options)
+            },
+            openSettings: { url in
+                _ = NSWorkspace.shared.open(url)
+            }
+        )
         self.didOpenAccessibilityPane = true
         UserDefaults.standard.set(true, forKey: self.accessibilityRestartFlagKey)
     }

@@ -438,7 +438,7 @@ struct NotchExpandedView: View {
                 if let appIcon = self.contentState.targetAppIcon {
                     Image(nsImage: appIcon)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .scaledToFit()
                         .frame(width: 16, height: 16)
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                 }

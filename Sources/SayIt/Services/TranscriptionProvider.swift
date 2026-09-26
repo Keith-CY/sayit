@@ -32,6 +32,9 @@ protocol TranscriptionProvider {
     /// - Parameter progressHandler: Optional callback for download progress (0.0 to 1.0)
     func prepare(progressHandler: ((Double) -> Void)?) async throws
 
+    /// Download for later selection without requiring the model to remain loaded.
+    func download(progressHandler: ((Double) -> Void)?) async throws
+
     /// Transcribe audio samples
     /// - Parameter samples: 16kHz mono PCM float samples
     /// - Returns: Transcription result with text and confidence
@@ -54,6 +57,9 @@ protocol TranscriptionProvider {
 
 // Default implementation for optional methods
 extension TranscriptionProvider {
+    func download(progressHandler: ((Double) -> Void)?) async throws {
+        try await self.prepare(progressHandler: progressHandler)
+    }
     func modelsExistOnDisk() -> Bool { return false }
     func clearCache() async throws {}
     func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
