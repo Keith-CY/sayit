@@ -43,7 +43,7 @@ struct FeedbackView: View {
             VStack(alignment: .leading, spacing: Space.lg) {
                 ActivityUI.SectionTitle("Status")
                 VStack(spacing: Space.md) {
-                    StatusRow(
+                    HelpStatusRow(
                         title: "Microphone",
                         detail: self.microphoneDetail,
                         isOK: self.microphoneStatus == .notDetermined ? nil : self.microphoneStatus == .authorized
@@ -54,7 +54,7 @@ struct FeedbackView: View {
                         }
                     }
                     Divider()
-                    StatusRow(
+                    HelpStatusRow(
                         title: "Accessibility",
                         detail: self.accessibilityTrusted
                             ? "Allowed. SayIt can type into other apps."
@@ -67,13 +67,13 @@ struct FeedbackView: View {
                         }
                     }
                     Divider()
-                    StatusRow(
+                    HelpStatusRow(
                         title: "Speech Model",
                         detail: self.settings.selectedSpeechModel.displayName,
                         isOK: nil
                     ) { EmptyView() }
                     Divider()
-                    StatusRow(
+                    HelpStatusRow(
                         title: "Version",
                         detail: "SayIt \(AppVersion.current().displayName) on macOS \(Self.macOSVersion)",
                         isOK: nil
@@ -222,7 +222,7 @@ struct FeedbackView: View {
 
 // MARK: - Rows
 
-private struct StatusRow<Accessory: View>: View {
+private struct HelpStatusRow<Accessory: View>: View {
     @Environment(\.theme) private var theme
 
     let title: String
