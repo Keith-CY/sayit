@@ -2,7 +2,8 @@
 //  SettingsView.swift
 //  SayIt
 //
-//  App preferences and audio device settings
+//  The General settings page: permissions, shortcuts, recording, output, overlay,
+//  app behavior and updates.
 //
 
 import AVFoundation
@@ -39,6 +40,7 @@ struct SettingsView: View {
     // which races with SwiftUI's AttributeGraph metadata processing and causes EXC_BAD_ACCESS crashes.
     @State private var cachedDefaultInputName: String = ""
     @State private var cachedDefaultOutputName: String = ""
+    @State private var showAccessibilitySteps = false
 
     let hotkeyManager: GlobalHotkeyManager?
     let menuBarManager: MenuBarManager
@@ -49,853 +51,20 @@ struct SettingsView: View {
     let revealAppInFinder: () -> Void
     let openApplicationsFolder: () -> Void
 
+    private static let defaultNoiseThreshold = 0.4
+
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 16) {
-                // App Settings Card
-                ThemedCard(style: .standard) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        // Section header
-                        Label("App Settings", systemImage: "power")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-
-                        VStack(spacing: 16) {
-                            // Launch at startup
-                            self.settingsToggleRow(
-                                title: "Launch at startup",
-                                description: "Automatically start SayIt when you log in",
-                                footnote: "Note: Requires app to be signed for this to work.",
-                                isOn: Binding(
-                                    get: { SettingsStore.shared.launchAtStartup },
-                                    set: { SettingsStore.shared.launchAtStartup = $0 }
-                                )
-                            )
-                            Divider().opacity(0.2)
-
-                            // Hide from Dock & App Switcher
-                            self.settingsToggleRow(
-                                title: "Hide from Dock & App Switcher",
-                                description: "Keep SayIt in the menu bar only (hides Dock icon and Cmd+Tab entry)",
-                                footnote: "Note: May require app restart to take effect.",
-                                isOn: Binding(
-                                    get: { SettingsStore.shared.hideFromDockAndAppSwitcher },
-                                    set: { SettingsStore.shared.hideFromDockAndAppSwitcher = $0 }
-                                )
-                            )
-                            Divider().opacity(0.2)
-
-                            // Accent Color
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(alignment: .center) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Accent Color")
-                                            .font(.body)
-                                        Text("Pick a preset accent color for the app.")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    HStack(spacing: 10) {
-                                        ForEach(SettingsStore.AccentColorOption.allCases) { option in
-                                            let isSelected = self.settings.accentColorOption == option
-                                            Button {
-                                                self.settings.accentColorOption = option
-                                            } label: {
-                                                Circle()
-                                                    .fill(Color(hex: option.hex) ?? .gray)
-                                                    .frame(width: 16, height: 16)
-                                                    .overlay(
-                                                        Circle()
-                                                            .stroke(
-                                                                isSelected ? self.theme.palette.accent : self.theme.palette.cardBorder.opacity(0.5),
-                                                                lineWidth: isSelected ? 2 : 1
-                                                            )
-                                                    )
-                                                    .padding(4)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .accessibilityLabel(option.rawValue)
-                                            .help(option.rawValue)
-                                        }
-                                    }
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(self.theme.palette.contentBackground)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                    .stroke(self.theme.palette.cardBorder.opacity(0.4), lineWidth: 1)
-                                            )
-                                    )
-                                }
-                            }
-                            Divider().opacity(0.2)
-
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Transcription Sounds")
-                                        .font(.body)
-                                    Text("Choose which sound plays when recording starts. Select None to disable.")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Spacer()
-
-                                Picker("", selection: Binding(
-                                    get: { SettingsStore.shared.transcriptionStartSound },
-                                    set: { SettingsStore.shared.transcriptionStartSound = $0 }
-                                )) {
-                                    ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
-                                        Text(option.displayName).tag(option)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 170, alignment: .trailing)
-                            }
-
-                            Divider().opacity(0.2)
-
-                        }
-                    }
-                    .padding(16)
-                }
-
-                // Software Updates Card
-                ThemedCard(style: .standard) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            Label("Software Updates", systemImage: "arrow.triangle.2.circlepath")
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-
-                            Spacer()
-
-                            Text("Version \(self.updateController.currentVersion.displayName)")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-
-                        self.settingsToggleRow(
-                            title: "Check for updates automatically",
-                            description: "Check GitHub Releases once per day. Installing an update always asks first.",
-                            isOn: Binding(
-                                get: { self.updateController.automaticChecksEnabled },
-                                set: { self.updateController.setAutomaticChecksEnabled($0) }
-                            )
-                        )
-
-                        Divider().opacity(0.2)
-
-                        HStack(spacing: 10) {
-                            Button {
-                                self.updateController.checkForUpdates()
-                            } label: {
-                                Label("Check for Updates", systemImage: "arrow.clockwise")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(self.theme.palette.accent)
-
-                            Button("View Releases") {
-                                self.updateController.openReleasesPage()
-                            }
-                            .buttonStyle(.bordered)
-
-                            Spacer()
-
-                            if let lastCheckDate = updateController.lastCheckDate {
-                                Text("Last checked \(lastCheckDate.formatted(date: .abbreviated, time: .shortened))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        if let lastErrorMessage = updateController.lastErrorMessage {
-                            Label(lastErrorMessage, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(self.theme.palette.warning)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-
-                        Label(
-                            "Downloads are verified with SayIt’s EdDSA update key before installation.",
-                            systemImage: "checkmark.shield"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    .padding(16)
-                }
-
-                // Microphone Permission Card
-                ThemedCard(style: .standard) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Label("Microphone Permission", systemImage: "mic.fill")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 10) {
-                                Circle()
-                                    .fill(self.asr.micStatus == .authorized ? self.theme.palette.success : self.theme.palette.warning)
-                                    .frame(width: 8, height: 8)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(self.asr.micStatus == .authorized ? "Microphone access granted" :
-                                        self.asr.micStatus == .denied ? "Microphone access denied" :
-                                        "Microphone access not determined")
-                                        .font(.body)
-                                        .foregroundStyle(self.asr.micStatus == .authorized ? .primary : self.theme.palette.warning)
-
-                                    if self.asr.micStatus != .authorized {
-                                        Text("Microphone access is required for voice recording")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-
-                                if self.asr.micStatus == .notDetermined {
-                                    Button {
-                                        self.asr.requestMicAccess()
-                                    } label: {
-                                        Label("Grant Access", systemImage: "mic.fill")
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(self.theme.palette.accent)
-                                    .controlSize(.regular)
-                                } else if self.asr.micStatus == .denied {
-                                    Button {
-                                        self.asr.openSystemSettingsForMic()
-                                    } label: {
-                                        Label("Open Settings", systemImage: "gear")
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.regular)
-                                }
-                            }
-
-                            if self.asr.micStatus != .authorized {
-                                self.instructionsBox(
-                                    title: "How to enable microphone access:",
-                                    steps: self.asr.micStatus == .notDetermined
-                                        ? ["Click **Grant Access** above", "Choose **Allow** in the system dialog"]
-                                        : ["Click **Open Settings** above", "Find **SayIt** in the microphone list", "Toggle **SayIt ON** to allow access"]
-                                )
-                            }
-                        }
-                    }
-                    .padding(16)
-                }
-
-                // Global Hotkey Card
-                ThemedCard(style: .standard) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack(spacing: 8) {
-                            Label("Global Hotkey", systemImage: "keyboard")
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-
-                            Spacer()
-
-                            if self.accessibilityEnabled {
-                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut {
-                                    Text("Recording…")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.orange)
-                                } else if self.hotkeyManagerInitialized {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(Color.fluidGreen)
-                                            .font(.caption)
-                                        Text("Active")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                } else {
-                                    Text("Initializing…")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-
-                        if self.accessibilityEnabled {
-                            VStack(alignment: .leading, spacing: 12) {
-                                if self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "hand.point.up.left.fill")
-                                            .foregroundStyle(.orange)
-                                        Text("Press your new hotkey combination now…")
-                                            .font(.caption)
-                                            .foregroundStyle(.orange)
-                                    }
-                                } else if !self.hotkeyManagerInitialized {
-                                    HStack(spacing: 8) {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                        Text("Hotkey initializing…")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-
-                                // MARK: - Shortcuts Section
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Keyboard Shortcuts")
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(.secondary)
-
-                                    self.shortcutRow(
-                                        icon: "mic.fill",
-                                        iconColor: .secondary,
-                                        title: "Transcribe Mode",
-                                        description: "Dictate text anywhere",
-                                        shortcut: self.hotkeyShortcut,
-                                        isRecording: self.isRecordingShortcut,
-                                        onChangePressed: {
-                                            DebugLogger.shared.debug("Starting to record new transcribe shortcut", source: "SettingsView")
-                                            self.isRecordingShortcut = true
-                                        }
-                                    )
-                                    Divider().opacity(0.2).padding(.vertical, 4)
-
-                                    self.shortcutRow(
-                                        icon: "terminal.fill",
-                                        iconColor: .secondary,
-                                        title: "Command Mode",
-                                        description: "Execute voice commands",
-                                        shortcut: self.commandModeShortcut,
-                                        isRecording: self.isRecordingCommandModeShortcut,
-                                        isEnabled: self.$commandModeShortcutEnabled,
-                                        onChangePressed: {
-                                            DebugLogger.shared.debug("Starting to record new command mode shortcut", source: "SettingsView")
-                                            self.isRecordingCommandModeShortcut = true
-                                        }
-                                    )
-                                    Divider().opacity(0.2).padding(.vertical, 4)
-
-                                    self.shortcutRow(
-                                        icon: "pencil.and.outline",
-                                        iconColor: .secondary,
-                                        title: "Edit Mode",
-                                        description: "Select text and speak how to edit, or generate new content",
-                                        shortcut: self.rewriteShortcut,
-                                        isRecording: self.isRecordingRewriteShortcut,
-                                        isEnabled: self.$rewriteShortcutEnabled,
-                                        onChangePressed: {
-                                            DebugLogger.shared.debug("Starting to record new write mode shortcut", source: "SettingsView")
-                                            self.isRecordingRewriteShortcut = true
-                                        }
-                                    )
-                                }
-                                .padding(12)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(self.theme.palette.elevatedCardBackground)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
-                                        )
-                                )
-
-                                // MARK: - Options Section
-
-                                VStack(spacing: 12) {
-                                    self.optionToggleRow(
-                                        title: "Press and Hold Mode",
-                                        description: "The shortcut only records while you hold it down, giving you quick push-to-talk style control.",
-                                        isOn: self.$pressAndHoldModeEnabled
-                                    )
-                                    .onChange(of: self.pressAndHoldModeEnabled) { _, newValue in
-                                        SettingsStore.shared.pressAndHoldMode = newValue
-                                        self.hotkeyManager?.enablePressAndHoldMode(newValue)
-                                    }
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
-                                        title: "Show Live Preview",
-                                        description: "Display transcription text in real-time in the overlay as you speak.",
-                                        isOn: self.$enableStreamingPreview
-                                    )
-                                    .onChange(of: self.enableStreamingPreview) { _, newValue in
-                                        SettingsStore.shared.enableStreamingPreview = newValue
-                                    }
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
-                                        title: "Copy to Clipboard",
-                                        description: "Automatically copy transcribed text to clipboard as a backup.",
-                                        isOn: self.$copyToClipboard
-                                    )
-                                    .onChange(of: self.copyToClipboard) { _, newValue in
-                                        SettingsStore.shared.copyTranscriptionToClipboard = newValue
-                                    }
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
-                                        title: "Save Transcription History",
-                                        description: "Save transcriptions in local history for quick access.",
-                                        isOn: Binding(
-                                            get: { SettingsStore.shared.saveTranscriptionHistory },
-                                            set: { SettingsStore.shared.saveTranscriptionHistory = $0 }
-                                        )
-                                    )
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
-                                        title: "Weekends Don't Break Streak",
-                                        description: "Skip Saturday and Sunday when calculating usage streaks. Perfect for weekday-only users.",
-                                        isOn: Binding(
-                                            get: { SettingsStore.shared.weekendsDontBreakStreak },
-                                            set: { SettingsStore.shared.weekendsDontBreakStreak = $0 }
-                                        )
-                                    )
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
-                                        title: "GAAV Mode",
-                                        description: "Remove first letter capitalization and trailing period. Useful for search queries, form fields, or casual text.\nFeature requested by MaxGaav.",
-                                        isOn: Binding(
-                                            get: { SettingsStore.shared.gaavModeEnabled },
-                                            set: { SettingsStore.shared.gaavModeEnabled = $0 }
-                                        )
-                                    )
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
-                                        title: "Pause Media During Transcription",
-                                        description: "Automatically pause currently playing audio/video when transcription starts. Resumes only if SayIt paused it.",
-                                        isOn: Binding(
-                                            get: { SettingsStore.shared.pauseMediaDuringTranscription },
-                                            set: { SettingsStore.shared.pauseMediaDuringTranscription = $0 }
-                                        )
-                                    )
-                                    Divider().opacity(0.2)
-
-                                }
-                                .padding(12)
-                            }
-                        } else {
-                            // Hotkey disabled - accessibility not enabled
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack(spacing: 10) {
-                                    Circle()
-                                        .fill(self.theme.palette.warning)
-                                        .frame(width: 8, height: 8)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "exclamationmark.triangle.fill")
-                                                .foregroundStyle(self.theme.palette.warning)
-                                            Text("Accessibility permissions required")
-                                                .font(.body)
-                                                .foregroundStyle(self.theme.palette.warning)
-                                        }
-                                        Text("Required for global hotkey functionality")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-
-                                    Button("Open Accessibility Settings") {
-                                        self.openAccessibilitySettings()
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(self.theme.palette.accent)
-                                    .controlSize(.regular)
-                                }
-
-                                self.instructionsBox(
-                                    title: "Follow these steps to enable Accessibility:",
-                                    steps: [
-                                        "Click **Open Accessibility Settings** above",
-                                        "In the Accessibility window, click the **+ button**",
-                                        "Navigate to Applications and select **SayIt**",
-                                        "Click **Open**, then toggle **SayIt ON** in the list",
-                                    ],
-                                    warningStyle: true
-                                )
-
-                                HStack(spacing: 10) {
-                                    Button("Reveal in Finder") {
-                                        self.revealAppInFinder()
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-
-                                    Button("Open Applications") {
-                                        self.openApplicationsFolder()
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                }
-                            }
-                        }
-                    }
-                    .padding(16)
-                }
-
-                // Audio Devices Card
-                ThemedCard(style: .standard) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            Label("Audio Devices", systemImage: "speaker.wave.2.fill")
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-
-                            Spacer()
-
-                            Button {
-                                self.refreshDevices()
-                                // Update cached default device names on refresh
-                                self.cachedDefaultInputName = AudioDevice.getDefaultInputDevice()?.name ?? ""
-                                self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
-                            } label: {
-                                Label("Refresh", systemImage: "arrow.clockwise")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-
-                        // Info note about device syncing
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "info.circle")
-                                .foregroundStyle(.secondary)
-                                .font(.body)
-                            Text("Audio devices are synced with macOS System Settings.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.vertical, 4)
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Text("Input Device")
-                                    .font(.body)
-                                Spacer()
-                                Picker("", selection: self.$selectedInputUID) {
-                                    // Handle empty state gracefully
-                                    if self.inputDevices.isEmpty {
-                                        Text("Loading...").tag("")
-                                    } else {
-                                        ForEach(self.inputDevices, id: \.uid) { dev in
-                                            // Add "(System Default)" tag using cached name to avoid CoreAudio calls during layout
-                                            let isSystemDefault = !self.cachedDefaultInputName.isEmpty && dev.name == self.cachedDefaultInputName
-                                            Text(isSystemDefault ? "\(dev.name) (System Default)" : dev.name).tag(dev.uid)
-                                        }
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 240)
-                                .disabled(self.asr.isRunning) // Disable device changes during recording
-                                .onChange(of: self.selectedInputUID) { oldUID, newUID in
-                                    guard !newUID.isEmpty else { return }
-
-                                    // Prevent device changes during active recording
-                                    if self.asr.isRunning {
-                                        DebugLogger.shared.warning("Cannot change input device during recording", source: "SettingsView")
-                                        // Revert to previous value
-                                        self.selectedInputUID = oldUID
-                                        return
-                                    }
-
-                                    SettingsStore.shared.preferredInputDeviceUID = newUID
-                                    // Only change system default if sync is enabled
-                                    if SettingsStore.shared.syncAudioDevicesWithSystem {
-                                        _ = AudioDevice.setDefaultInputDevice(uid: newUID)
-                                    }
-                                }
-                                // Sync selection when devices load or change
-                                .onChange(of: self.inputDevices) { _, newDevices in
-                                    // Update cached default device name when device list changes
-                                    self.cachedDefaultInputName = AudioDevice.getDefaultInputDevice()?.name ?? ""
-
-                                    // If selection is empty or not found in new list, select first available
-                                    if !newDevices.isEmpty {
-                                        let currentValid = newDevices.contains { $0.uid == self.selectedInputUID }
-                                        if !currentValid {
-                                            if let prefUID = SettingsStore.shared.preferredInputDeviceUID,
-                                               newDevices.contains(where: { $0.uid == prefUID })
-                                            {
-                                                self.selectedInputUID = prefUID
-                                            } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
-                                                      newDevices.contains(where: { $0.uid == defaultUID })
-                                            {
-                                                self.selectedInputUID = defaultUID
-                                            } else {
-                                                self.selectedInputUID = newDevices.first?.uid ?? ""
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            HStack {
-                                Text("Output Device")
-                                    .font(.body)
-                                Spacer()
-                                Picker("", selection: self.$selectedOutputUID) {
-                                    // Handle empty state gracefully
-                                    if self.outputDevices.isEmpty {
-                                        Text("Loading...").tag("")
-                                    } else {
-                                        ForEach(self.outputDevices, id: \.uid) { dev in
-                                            // Add "(System Default)" tag using cached name to avoid CoreAudio calls during layout
-                                            let isSystemDefault = !self.cachedDefaultOutputName.isEmpty && dev.name == self.cachedDefaultOutputName
-                                            Text(isSystemDefault ? "\(dev.name) (System Default)" : dev.name).tag(dev.uid)
-                                        }
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 240)
-                                .disabled(self.asr.isRunning) // Disable device changes during recording
-                                .onChange(of: self.selectedOutputUID) { oldUID, newUID in
-                                    guard !newUID.isEmpty else { return }
-
-                                    // Prevent device changes during active recording
-                                    if self.asr.isRunning {
-                                        DebugLogger.shared.warning("Cannot change output device during recording", source: "SettingsView")
-                                        // Revert to previous value
-                                        self.selectedOutputUID = oldUID
-                                        return
-                                    }
-
-                                    SettingsStore.shared.preferredOutputDeviceUID = newUID
-                                    // Only change system default if sync is enabled
-                                    if SettingsStore.shared.syncAudioDevicesWithSystem {
-                                        _ = AudioDevice.setDefaultOutputDevice(uid: newUID)
-                                    }
-                                }
-                                // Sync selection when devices load or change
-                                .onChange(of: self.outputDevices) { _, newDevices in
-                                    // Update cached default device name when device list changes
-                                    self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
-
-                                    if !newDevices.isEmpty {
-                                        let currentValid = newDevices.contains { $0.uid == self.selectedOutputUID }
-                                        if !currentValid {
-                                            if let prefUID = SettingsStore.shared.preferredOutputDeviceUID,
-                                               newDevices.contains(where: { $0.uid == prefUID })
-                                            {
-                                                self.selectedOutputUID = prefUID
-                                            } else if let defaultUID = AudioDevice.getDefaultOutputDevice()?.uid,
-                                                      newDevices.contains(where: { $0.uid == defaultUID })
-                                            {
-                                                self.selectedOutputUID = defaultUID
-                                            } else {
-                                                self.selectedOutputUID = newDevices.first?.uid ?? ""
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // CRITICAL FIX: Use cached values instead of querying CoreAudio in view body.
-                            // Querying AudioDevice here triggers HALSystem::InitializeShell() race condition.
-                            if !self.cachedDefaultInputName.isEmpty && !self.cachedDefaultOutputName.isEmpty {
-                                HStack {
-                                    Spacer()
-                                    Text("Default: \(self.cachedDefaultInputName) / \(self.cachedDefaultOutputName)")
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
-                                }
-                            }
-
-                            // REMOVED: Sync mode toggle
-                            // Independent mode doesn't work for aggregate devices (Bluetooth, etc.)
-                            // due to CoreAudio limitation (OSStatus -10851)
-                            // Always use sync mode for reliability across all device types
-                        }
-                    }
-                    .padding(16)
-                }
-
-                // Overlay Settings Card
-                ThemedCard(style: .standard) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Label("Overlay", systemImage: "waveform")
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Sensitivity")
-                                        .font(.body)
-                                    Text("Control how sensitive the audio visualizer is to sound input")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Spacer()
-
-                                Button("Reset") {
-                                    self.visualizerNoiseThreshold = 0.4
-                                    SettingsStore.shared.visualizerNoiseThreshold = self.visualizerNoiseThreshold
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-
-                            HStack(spacing: 10) {
-                                Text("More")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 36, alignment: .trailing)
-
-                                Slider(value: self.$visualizerNoiseThreshold, in: 0.01...0.8, step: 0.01)
-                                    .controlSize(.regular)
-
-                                Text("Less")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 36, alignment: .leading)
-
-                                Text(String(format: "%.2f", self.visualizerNoiseThreshold))
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: 36)
-                            }
-
-                            Divider().padding(.vertical, 8)
-
-                            // Overlay Position
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Overlay Position")
-                                        .font(.body)
-                                    Text("Where the recording indicator appears on screen")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Spacer()
-
-                                Picker("", selection: self.$settings.overlayPosition) {
-                                    ForEach(SettingsStore.OverlayPosition.allCases, id: \.self) { position in
-                                        Text(position.displayName).tag(position)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(width: 170, alignment: .trailing)
-                            }
-
-                            Divider().padding(.vertical, 8)
-
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack(alignment: .top) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Transcription Preview Length")
-                                            .font(.body)
-                                        Text("How many recent characters appear in the notch/pill preview")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    Text("\(self.settings.transcriptionPreviewCharLimit) chars")
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                HStack(spacing: 10) {
-                                    Text("Less")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 36, alignment: .trailing)
-
-                                    Slider(
-                                        value: Binding(
-                                            get: { Double(self.settings.transcriptionPreviewCharLimit) },
-                                            set: { self.settings.transcriptionPreviewCharLimit = Int($0.rounded()) }
-                                        ),
-                                        in: Double(SettingsStore.transcriptionPreviewCharLimitRange.lowerBound)...Double(SettingsStore.transcriptionPreviewCharLimitRange.upperBound),
-                                        step: Double(SettingsStore.transcriptionPreviewCharLimitStep)
-                                    )
-                                    .controlSize(.regular)
-
-                                    Text("More")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 36, alignment: .leading)
-                                }
-                            }
-
-                            // Bottom overlay specific settings (only show when bottom is selected)
-                            if self.settings.overlayPosition == .bottom {
-                                Divider().padding(.vertical, 4)
-
-                                // Overlay Size
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Overlay Size")
-                                            .font(.body)
-                                        Text("How large the recording indicator appears")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    Picker("", selection: self.$settings.overlaySize) {
-                                        ForEach(SettingsStore.OverlaySize.allCases, id: \.self) { size in
-                                            Text(size.displayName).tag(size)
-                                        }
-                                    }
-                                    .pickerStyle(.menu)
-                                    .frame(width: 170, alignment: .trailing)
-                                }
-
-                                // Bottom Offset
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Bottom Offset")
-                                            .font(.body)
-                                        Text("Distance from bottom of screen")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    HStack(spacing: 6) {
-                                        Slider(value: self.$settings.overlayBottomOffset, in: 20...500)
-                                            .frame(width: 110)
-                                            .controlSize(.small)
-
-                                        Text("\(Int(self.settings.overlayBottomOffset)) px")
-                                            .font(.caption.monospaced())
-                                            .foregroundStyle(.secondary)
-                                            .frame(width: 54, alignment: .trailing)
-                                    }
-                                    .frame(width: 170, alignment: .trailing)
-                                }
-                            }
-
-                            if self.asr.isRunning {
-                                Text("Settings are disabled during active recording")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .italic()
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 4)
-                            }
-                        }
-                    }
-                    .padding(16)
-                }
-
-            }
-            .padding(16)
+        SettingsKit.Page(
+            title: "General",
+            subtitle: "How SayIt listens, where it writes, and how it starts."
+        ) {
+            self.permissionsSection
+            self.shortcutsSection
+            self.recordingSection
+            self.outputSection
+            self.overlaySection
+            self.appSection
+            self.updatesSection
         }
         .onAppear {
             self.updateController.refreshStatus()
@@ -906,42 +75,8 @@ struct SettingsView: View {
                 await AudioStartupGate.shared.waitUntilOpen()
 
                 self.refreshDevices()
-
-                // Sync input device selection after refresh
-                if !self.inputDevices.isEmpty {
-                    let inputValid = self.inputDevices.contains { $0.uid == self.selectedInputUID }
-                    if !inputValid || self.selectedInputUID.isEmpty {
-                        if let prefUID = SettingsStore.shared.preferredInputDeviceUID,
-                           self.inputDevices.contains(where: { $0.uid == prefUID })
-                        {
-                            self.selectedInputUID = prefUID
-                        } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
-                                  self.inputDevices.contains(where: { $0.uid == defaultUID })
-                        {
-                            self.selectedInputUID = defaultUID
-                        } else {
-                            self.selectedInputUID = self.inputDevices.first?.uid ?? ""
-                        }
-                    }
-                }
-
-                // Sync output device selection after refresh
-                if !self.outputDevices.isEmpty {
-                    let outputValid = self.outputDevices.contains { $0.uid == self.selectedOutputUID }
-                    if !outputValid || self.selectedOutputUID.isEmpty {
-                        if let prefUID = SettingsStore.shared.preferredOutputDeviceUID,
-                           self.outputDevices.contains(where: { $0.uid == prefUID })
-                        {
-                            self.selectedOutputUID = prefUID
-                        } else if let defaultUID = AudioDevice.getDefaultOutputDevice()?.uid,
-                                  self.outputDevices.contains(where: { $0.uid == defaultUID })
-                        {
-                            self.selectedOutputUID = defaultUID
-                        } else {
-                            self.selectedOutputUID = self.outputDevices.first?.uid ?? ""
-                        }
-                    }
-                }
+                self.syncInputSelection(with: self.inputDevices)
+                self.syncOutputSelection(with: self.outputDevices)
 
                 // CRITICAL FIX: Populate cached default device names after onAppear, not during view body evaluation.
                 // This avoids the CoreAudio/SwiftUI AttributeGraph race condition that causes EXC_BAD_ACCESS.
@@ -954,173 +89,710 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Helper Views
+    // MARK: - Permissions
 
-    @ViewBuilder
-    private func settingsToggleRow(
-        title: String,
-        description: String,
-        footnote: String? = nil,
-        isOn: Binding<Bool>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.body)
-                    Text(description)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+    private var permissionsSection: some View {
+        SettingsKit.Section(
+            "Permissions",
+            footer: "SayIt only listens after you start dictating. Audio never leaves this Mac."
+        ) {
+            self.microphoneRow
+            SettingsKit.RowDivider()
+            self.accessibilityRow
+
+            if !self.accessibilityEnabled {
+                self.accessibilityHelp
+            }
+        }
+    }
+
+    private var microphoneRow: some View {
+        let status = self.asr.micStatus
+        return SettingsKit.Row(
+            "Microphone",
+            description: self.microphoneDescription(for: status),
+            systemImage: "mic"
+        ) {
+            switch status {
+            case .authorized:
+                SettingsKit.StatusBadge(text: "Allowed", systemImage: "checkmark.circle.fill", tone: .success)
+            case .notDetermined:
+                Button("Allow Access") {
+                    self.asr.requestMicAccess()
                 }
-
-                Spacer()
-
-                Toggle("", isOn: isOn)
-                    .toggleStyle(.switch)
-                    .tint(self.theme.palette.accent)
-                    .labelsHidden()
-            }
-
-            if let footnote = footnote {
-                Text(footnote)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                .buttonStyle(.sayItPrimary)
+            case .denied:
+                Button("Open System Settings") {
+                    self.asr.openSystemSettingsForMic()
+                }
+                .buttonStyle(.sayItSecondary)
+            default:
+                SettingsKit.StatusBadge(text: "Restricted", systemImage: "lock", tone: .warning)
             }
         }
     }
 
-    @ViewBuilder
-    private func optionToggleRow(
-        title: String,
-        description: String,
-        isOn: Binding<Bool>
-    ) -> some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .tint(self.theme.palette.accent)
-                .labelsHidden()
+    private func microphoneDescription(for status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .authorized:
+            return "SayIt can hear you when you start dictating."
+        case .notDetermined:
+            return "Needed to hear your voice. Choose Allow when macOS asks."
+        case .denied:
+            return "Access is off. Turn on SayIt in System Settings › Privacy & Security › Microphone."
+        default:
+            return "This Mac restricts microphone access, for example through a management profile."
         }
     }
 
-    @ViewBuilder
-    private func instructionsBox(
-        title: String,
-        steps: [String],
-        warningStyle: Bool = false
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "info.circle.fill")
-                    .foregroundStyle(warningStyle ? self.theme.palette.warning : self.theme.palette.accent)
-                    .font(.caption)
-                Text(title)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+    private var accessibilityRow: some View {
+        SettingsKit.Row(
+            "Accessibility",
+            description: self.accessibilityEnabled
+                ? "Lets SayIt respond to shortcuts and type into other apps."
+                : "Needed for keyboard shortcuts and for typing into other apps.",
+            systemImage: "accessibility"
+        ) {
+            if self.accessibilityEnabled {
+                SettingsKit.StatusBadge(text: "Allowed", systemImage: "checkmark.circle.fill", tone: .success)
+            } else {
+                // One primary action per page: the microphone comes first when both are missing.
+                Button("Open System Settings") {
+                    self.openAccessibilitySettings()
+                }
+                .buttonStyle(SayItButtonStyle(role: self.asr.micStatus == .notDetermined ? .secondary : .primary))
             }
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("\(index + 1).")
-                            .font(.caption)
-                            .foregroundStyle(warningStyle ? self.theme.palette.warning : self.theme.palette.accent)
-                            .fontWeight(.semibold)
-                            .frame(width: 16, alignment: .trailing)
-                        Text(.init(step))
-                            .font(.caption)
-                            .foregroundStyle(.primary)
+    private var accessibilityHelp: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            DisclosureGroup(isExpanded: self.$showAccessibilitySteps) {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    self.numberedStep(1, "Click **Open System Settings**.")
+                    self.numberedStep(2, "If SayIt isn’t listed, click **+** and choose SayIt from Applications.")
+                    self.numberedStep(3, "Turn on **SayIt**.")
+
+                    HStack(spacing: Space.sm) {
+                        Button("Show SayIt in Finder") { self.revealAppInFinder() }
+                            .buttonStyle(.sayIt(.quiet, size: .small))
+                        Button("Open Applications Folder") { self.openApplicationsFolder() }
+                            .buttonStyle(.sayIt(.quiet, size: .small))
                     }
                 }
+                .padding(.top, Space.sm)
+            } label: {
+                Text("How to allow Accessibility")
+                    .font(AppFont.callout)
+                    .foregroundStyle(self.theme.palette.secondaryText)
             }
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill((warningStyle ? self.theme.palette.warning : self.theme.palette.accent).opacity(0.12))
-        )
+        .padding(.horizontal, Space.lg)
+        .padding(.bottom, Space.md)
+        .padding(.leading, Space.xl + Space.md)
+    }
+
+    private func numberedStep(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+            Text("\(number).")
+                .font(AppFont.captionEmphasis)
+                .foregroundStyle(self.theme.palette.accentForeground)
+                .monospacedDigit()
+            Text(.init(text))
+                .font(AppFont.callout)
+                .foregroundStyle(self.theme.palette.primaryText)
+        }
+    }
+
+    // MARK: - Shortcuts
+
+    private var isCapturingShortcut: Bool {
+        self.isRecordingShortcut || self.isRecordingCommandModeShortcut || self.isRecordingRewriteShortcut
+    }
+
+    private var shortcutsSection: some View {
+        SettingsKit.Section(
+            "Keyboard Shortcuts",
+            footer: self.accessibilityEnabled
+                ? "Shortcuts work in every app. Press Esc while recording to cancel."
+                : "Shortcuts start working once Accessibility is allowed above.",
+            accessory: { self.shortcutStatusBadge }
+        ) {
+            self.shortcutRow(
+                systemImage: "mic",
+                title: "Dictate Mode",
+                description: "Speak and SayIt types what you said.",
+                shortcut: self.hotkeyShortcut,
+                isCapturing: self.isRecordingShortcut,
+                onChange: {
+                    DebugLogger.shared.debug("Starting to record new dictate shortcut", source: "SettingsView")
+                    self.isRecordingShortcut = true
+                }
+            )
+            SettingsKit.RowDivider()
+            self.shortcutRow(
+                systemImage: "pencil.and.outline",
+                title: "Edit Mode",
+                description: "Select text, then say how to change it — or ask for new text.",
+                shortcut: self.rewriteShortcut,
+                isCapturing: self.isRecordingRewriteShortcut,
+                isEnabled: self.$rewriteShortcutEnabled,
+                onChange: {
+                    DebugLogger.shared.debug("Starting to record new edit shortcut", source: "SettingsView")
+                    self.isRecordingRewriteShortcut = true
+                }
+            )
+            SettingsKit.RowDivider()
+            self.shortcutRow(
+                systemImage: "terminal",
+                title: "Command Mode",
+                description: "Ask SayIt to do something on your Mac.",
+                shortcut: self.commandModeShortcut,
+                isCapturing: self.isRecordingCommandModeShortcut,
+                isEnabled: self.$commandModeShortcutEnabled,
+                onChange: {
+                    DebugLogger.shared.debug("Starting to record new command mode shortcut", source: "SettingsView")
+                    self.isRecordingCommandModeShortcut = true
+                }
+            )
+            SettingsKit.RowDivider()
+            SettingsKit.ToggleRow(
+                "Hold shortcut to record",
+                description: "Records only while you hold the shortcut. Release it to finish.",
+                systemImage: "hand.tap",
+                isOn: self.$pressAndHoldModeEnabled
+            )
+            .onChange(of: self.pressAndHoldModeEnabled) { _, newValue in
+                SettingsStore.shared.pressAndHoldMode = newValue
+                self.hotkeyManager?.enablePressAndHoldMode(newValue)
+            }
+        }
     }
 
     @ViewBuilder
+    private var shortcutStatusBadge: some View {
+        if !self.accessibilityEnabled {
+            SettingsKit.StatusBadge(text: "Needs Accessibility", systemImage: "exclamationmark.triangle.fill", tone: .warning)
+        } else if self.isCapturingShortcut {
+            SettingsKit.StatusBadge(text: "Press new shortcut…", systemImage: "keyboard", tone: .info)
+        } else if self.hotkeyManagerInitialized {
+            SettingsKit.StatusBadge(text: "Active", systemImage: "checkmark.circle.fill", tone: .success)
+        } else {
+            SettingsKit.StatusBadge(text: "Starting…", systemImage: "hourglass", tone: .neutral)
+        }
+    }
+
     private func shortcutRow(
-        icon: String,
-        iconColor: Color,
+        systemImage: String,
         title: String,
         description: String,
         shortcut: HotkeyShortcut,
-        isRecording: Bool,
+        isCapturing: Bool,
         isEnabled: Binding<Bool>? = nil,
-        onChangePressed: @escaping () -> Void
+        onChange: @escaping () -> Void
     ) -> some View {
-        let enabledValue = isEnabled?.wrappedValue ?? true
+        let enabled = isEnabled?.wrappedValue ?? true
+        let canEdit = self.accessibilityEnabled && enabled
 
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .foregroundStyle(iconColor)
-                    .frame(width: 20)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.body)
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        return SettingsKit.Row(title, description: description, systemImage: systemImage) {
+            HStack(spacing: Space.sm) {
+                if isCapturing && enabled {
+                    Text("Press keys…")
+                        .font(AppFont.captionEmphasis)
+                        .foregroundStyle(self.theme.palette.info)
+                        .padding(.horizontal, Space.sm)
+                        .padding(.vertical, Space.xs)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                .fill(self.theme.palette.subtle(self.theme.palette.info))
+                        )
+                        .accessibilityLabel("Waiting for the new \(title) shortcut")
+                } else {
+                    SettingsKit.KeyCap(text: shortcut.displayString)
+                        .opacity(enabled ? 1 : 0.5)
                 }
 
-                Spacer()
+                Button("Change…") {
+                    onChange()
+                }
+                .buttonStyle(.sayIt(.secondary, size: .small))
+                .disabled(isCapturing || !canEdit)
+                .accessibilityLabel("Change \(title) shortcut")
 
                 if let isEnabled {
-                    Toggle("", isOn: isEnabled)
+                    Toggle("Enable \(title)", isOn: isEnabled)
                         .toggleStyle(.switch)
-                        .tint(self.theme.palette.accent)
                         .labelsHidden()
+                        .disabled(!self.accessibilityEnabled)
                 }
-            }
-
-            HStack(spacing: 10) {
-                Color.clear
-                    .frame(width: 20)
-
-                if isRecording && enabledValue {
-                    Text("Press shortcut...")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(.orange.opacity(0.2)))
-                } else {
-                    Text(shortcut.displayString)
-                        .font(.caption.monospaced().weight(.medium))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(.quaternary.opacity(0.5))
-                            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .stroke(.primary.opacity(0.15), lineWidth: 1)))
-                }
-
-                Button("Change") {
-                    onChangePressed()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(isRecording || !enabledValue)
             }
         }
-        .opacity(enabledValue ? 1 : 0.7)
+    }
+
+    // MARK: - Recording
+
+    private var recordingSection: some View {
+        SettingsKit.Section(
+            "Recording",
+            footer: self.asr.isRunning
+                ? "Devices can’t be changed while you’re recording."
+                : "Changing a device here also changes it in macOS Sound settings.",
+            accessory: {
+                IconButton("Refresh Devices", systemName: "arrow.clockwise") {
+                    self.refreshDevices()
+                    // Update cached default device names on refresh
+                    self.cachedDefaultInputName = AudioDevice.getDefaultInputDevice()?.name ?? ""
+                    self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
+                }
+            }
+        ) {
+            SettingsKit.Row("Microphone", description: "The input SayIt records from.", systemImage: "mic") {
+                self.devicePicker(
+                    title: "Microphone",
+                    selection: self.$selectedInputUID,
+                    devices: self.inputDevices,
+                    defaultName: self.cachedDefaultInputName
+                )
+                .onChange(of: self.selectedInputUID) { oldUID, newUID in
+                    guard !newUID.isEmpty else { return }
+
+                    // Prevent device changes during active recording
+                    if self.asr.isRunning {
+                        DebugLogger.shared.warning("Cannot change input device during recording", source: "SettingsView")
+                        self.selectedInputUID = oldUID
+                        return
+                    }
+
+                    SettingsStore.shared.preferredInputDeviceUID = newUID
+                    if SettingsStore.shared.syncAudioDevicesWithSystem {
+                        _ = AudioDevice.setDefaultInputDevice(uid: newUID)
+                    }
+                }
+                .onChange(of: self.inputDevices) { _, newDevices in
+                    self.cachedDefaultInputName = AudioDevice.getDefaultInputDevice()?.name ?? ""
+                    self.syncInputSelection(with: newDevices)
+                }
+            }
+            SettingsKit.RowDivider()
+            SettingsKit.Row("Sound output", description: "Where SayIt plays its sounds.", systemImage: "speaker.wave.2") {
+                self.devicePicker(
+                    title: "Sound output",
+                    selection: self.$selectedOutputUID,
+                    devices: self.outputDevices,
+                    defaultName: self.cachedDefaultOutputName
+                )
+                .onChange(of: self.selectedOutputUID) { oldUID, newUID in
+                    guard !newUID.isEmpty else { return }
+
+                    if self.asr.isRunning {
+                        DebugLogger.shared.warning("Cannot change output device during recording", source: "SettingsView")
+                        self.selectedOutputUID = oldUID
+                        return
+                    }
+
+                    SettingsStore.shared.preferredOutputDeviceUID = newUID
+                    if SettingsStore.shared.syncAudioDevicesWithSystem {
+                        _ = AudioDevice.setDefaultOutputDevice(uid: newUID)
+                    }
+                }
+                .onChange(of: self.outputDevices) { _, newDevices in
+                    self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
+                    self.syncOutputSelection(with: newDevices)
+                }
+            }
+            SettingsKit.RowDivider()
+            SettingsKit.Row("Start sound", description: "Plays when recording begins.", systemImage: "bell") {
+                Picker("Start sound", selection: Binding(
+                    get: { SettingsStore.shared.transcriptionStartSound },
+                    set: { SettingsStore.shared.transcriptionStartSound = $0 }
+                )) {
+                    ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
+                        Text(option.uiName).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: SettingsKit.pickerWidth)
+            }
+            SettingsKit.RowDivider()
+            SettingsKit.ToggleRow(
+                "Pause media while recording",
+                description: "Pauses music or video when you start and resumes it afterwards, if SayIt paused it.",
+                systemImage: "pause.circle",
+                isOn: Binding(
+                    get: { SettingsStore.shared.pauseMediaDuringTranscription },
+                    set: { SettingsStore.shared.pauseMediaDuringTranscription = $0 }
+                )
+            )
+        }
+    }
+
+    private func devicePicker(
+        title: String,
+        selection: Binding<String>,
+        devices: [AudioDevice.Device],
+        defaultName: String
+    ) -> some View {
+        Picker(title, selection: selection) {
+            if devices.isEmpty {
+                Text("Looking for devices…").tag("")
+            } else {
+                ForEach(devices, id: \.uid) { device in
+                    // Use the cached default name to avoid CoreAudio calls during layout
+                    let isSystemDefault = !defaultName.isEmpty && device.name == defaultName
+                    Text(isSystemDefault ? "\(device.name) (System Default)" : device.name).tag(device.uid)
+                }
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: SettingsKit.pickerWidth)
+        .disabled(self.asr.isRunning)
+    }
+
+    private func syncInputSelection(with devices: [AudioDevice.Device]) {
+        guard !devices.isEmpty else { return }
+        guard self.selectedInputUID.isEmpty || !devices.contains(where: { $0.uid == self.selectedInputUID }) else { return }
+
+        if let preferredUID = SettingsStore.shared.preferredInputDeviceUID,
+           devices.contains(where: { $0.uid == preferredUID })
+        {
+            self.selectedInputUID = preferredUID
+        } else if let defaultUID = AudioDevice.getDefaultInputDevice()?.uid,
+                  devices.contains(where: { $0.uid == defaultUID })
+        {
+            self.selectedInputUID = defaultUID
+        } else {
+            self.selectedInputUID = devices.first?.uid ?? ""
+        }
+    }
+
+    private func syncOutputSelection(with devices: [AudioDevice.Device]) {
+        guard !devices.isEmpty else { return }
+        guard self.selectedOutputUID.isEmpty || !devices.contains(where: { $0.uid == self.selectedOutputUID }) else { return }
+
+        if let preferredUID = SettingsStore.shared.preferredOutputDeviceUID,
+           devices.contains(where: { $0.uid == preferredUID })
+        {
+            self.selectedOutputUID = preferredUID
+        } else if let defaultUID = AudioDevice.getDefaultOutputDevice()?.uid,
+                  devices.contains(where: { $0.uid == defaultUID })
+        {
+            self.selectedOutputUID = defaultUID
+        } else {
+            self.selectedOutputUID = devices.first?.uid ?? ""
+        }
+    }
+
+    // MARK: - Output
+
+    private var outputSection: some View {
+        SettingsKit.Section("Output") {
+            SettingsKit.ToggleRow(
+                "Also copy to the clipboard",
+                description: "Keeps each dictation on the clipboard in case typing into an app fails.",
+                systemImage: "doc.on.clipboard",
+                isOn: self.$copyToClipboard
+            )
+            .onChange(of: self.copyToClipboard) { _, newValue in
+                SettingsStore.shared.copyTranscriptionToClipboard = newValue
+            }
+            SettingsKit.RowDivider()
+            SettingsKit.ToggleRow(
+                "Skip capitalization and final period",
+                description: "Writes short entries like search queries and form fields as spoken: no capital first letter, no trailing period.",
+                systemImage: "textformat",
+                isOn: Binding(
+                    get: { SettingsStore.shared.gaavModeEnabled },
+                    set: { SettingsStore.shared.gaavModeEnabled = $0 }
+                )
+            )
+            SettingsKit.RowDivider()
+            SettingsKit.ToggleRow(
+                "Save transcription history",
+                description: "Keeps your dictations on this Mac so you can find them in History.",
+                systemImage: "clock.arrow.circlepath",
+                isOn: Binding(
+                    get: { SettingsStore.shared.saveTranscriptionHistory },
+                    set: { SettingsStore.shared.saveTranscriptionHistory = $0 }
+                )
+            )
+        }
+    }
+
+    // MARK: - Overlay
+
+    private var overlaySection: some View {
+        SettingsKit.Section(
+            "Recording Overlay",
+            footer: "The overlay shows that SayIt is listening and what it heard."
+        ) {
+            SettingsKit.Row("Position", description: "Where the overlay appears while you dictate.", systemImage: "rectangle.topthird.inset.filled") {
+                Picker("Position", selection: self.$settings.overlayPosition) {
+                    ForEach(SettingsStore.OverlayPosition.allCases, id: \.self) { position in
+                        Text(position.displayName).tag(position)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: SettingsKit.pickerWidth)
+            }
+
+            if self.settings.overlayPosition == .bottom {
+                SettingsKit.RowDivider()
+                SettingsKit.Row("Size", description: "How large the overlay appears.", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    Picker("Size", selection: self.$settings.overlaySize) {
+                        ForEach(SettingsStore.OverlaySize.allCases, id: \.self) { size in
+                            Text(size.displayName).tag(size)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: SettingsKit.pickerWidth)
+                }
+                SettingsKit.RowDivider()
+                self.sliderRow(
+                    SliderSpec(
+                        title: "Distance from bottom",
+                        description: "Space between the overlay and the bottom of the screen.",
+                        systemImage: "arrow.up.to.line",
+                        range: 20...500,
+                        step: 1,
+                        valueLabel: "\(Int(self.settings.overlayBottomOffset)) pt"
+                    ),
+                    value: self.$settings.overlayBottomOffset
+                )
+            }
+
+            SettingsKit.RowDivider()
+            SettingsKit.ToggleRow(
+                "Show live transcript",
+                description: "Shows words in the overlay as you speak.",
+                systemImage: "text.bubble",
+                isOn: self.$enableStreamingPreview
+            )
+            .onChange(of: self.enableStreamingPreview) { _, newValue in
+                SettingsStore.shared.enableStreamingPreview = newValue
+            }
+            SettingsKit.RowDivider()
+            self.sliderRow(
+                SliderSpec(
+                    title: "Preview length",
+                    description: "How much of the latest transcript the overlay shows.",
+                    systemImage: "text.alignleft",
+                    range: Double(SettingsStore.transcriptionPreviewCharLimitRange.lowerBound)...Double(SettingsStore.transcriptionPreviewCharLimitRange.upperBound),
+                    step: Double(SettingsStore.transcriptionPreviewCharLimitStep),
+                    valueLabel: CopyFormat.count(self.settings.transcriptionPreviewCharLimit, "character"),
+                    minimumLabel: "Less",
+                    maximumLabel: "More"
+                ),
+                value: Binding(
+                    get: { Double(self.settings.transcriptionPreviewCharLimit) },
+                    set: { self.settings.transcriptionPreviewCharLimit = Int($0.rounded()) }
+                )
+            )
+            SettingsKit.RowDivider()
+            self.sliderRow(
+                SliderSpec(
+                    title: "Meter sensitivity",
+                    description: "How much sound it takes to move the level meter.",
+                    systemImage: "waveform",
+                    range: 0.01...0.8,
+                    step: 0.01,
+                    minimumLabel: "More",
+                    maximumLabel: "Less"
+                ),
+                value: self.$visualizerNoiseThreshold
+            ) {
+                Button("Reset") {
+                    self.visualizerNoiseThreshold = Self.defaultNoiseThreshold
+                    SettingsStore.shared.visualizerNoiseThreshold = self.visualizerNoiseThreshold
+                }
+                .buttonStyle(.sayIt(.quiet, size: .small))
+                .disabled(abs(self.visualizerNoiseThreshold - Self.defaultNoiseThreshold) < 0.001)
+                .accessibilityLabel("Reset meter sensitivity")
+            }
+        }
+    }
+
+    private struct SliderSpec {
+        let title: String
+        let description: String
+        let systemImage: String
+        let range: ClosedRange<Double>
+        let step: Double
+        var valueLabel: String?
+        var minimumLabel: String?
+        var maximumLabel: String?
+    }
+
+    private func sliderRow(_ spec: SliderSpec, value: Binding<Double>) -> some View {
+        self.sliderRow(spec, value: value) { EmptyView() }
+    }
+
+    private func sliderRow<Trailing: View>(
+        _ spec: SliderSpec,
+        value: Binding<Double>,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        SettingsKit.Row(spec.title, description: spec.description, systemImage: spec.systemImage) {
+            HStack(spacing: Space.sm) {
+                Slider(value: value, in: spec.range, step: spec.step) {
+                    Text(spec.title)
+                } minimumValueLabel: {
+                    Text(spec.minimumLabel ?? "")
+                        .font(AppFont.caption)
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                } maximumValueLabel: {
+                    Text(spec.maximumLabel ?? "")
+                        .font(AppFont.caption)
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                }
+                .labelsHidden()
+                .frame(width: SettingsKit.sliderWidth)
+                .accessibilityValue(spec.valueLabel ?? value.wrappedValue.formatted(.number.precision(.fractionLength(2))))
+
+                // One fixed-width column for the value or an action, so slider rows align.
+                HStack(spacing: 0) {
+                    if let valueLabel = spec.valueLabel {
+                        Text(valueLabel)
+                            .font(AppFont.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(self.theme.palette.secondaryText)
+                            .accessibilityHidden(true)
+                    }
+                    trailing()
+                }
+                .frame(width: SettingsKit.valueLabelWidth, alignment: .leading)
+            }
+        }
+    }
+
+    // MARK: - App
+
+    private var appSection: some View {
+        SettingsKit.Section("App") {
+            SettingsKit.ToggleRow(
+                "Open at login",
+                description: "Starts SayIt in the menu bar when you log in.",
+                systemImage: "power",
+                isOn: Binding(
+                    get: { SettingsStore.shared.launchAtStartup },
+                    set: { SettingsStore.shared.launchAtStartup = $0 }
+                )
+            )
+            SettingsKit.RowDivider()
+            SettingsKit.ToggleRow(
+                "Hide from Dock and ⌘-Tab",
+                description: "Keeps SayIt in the menu bar only. May take effect after SayIt restarts.",
+                systemImage: "dock.rectangle",
+                isOn: Binding(
+                    get: { SettingsStore.shared.hideFromDockAndAppSwitcher },
+                    set: { SettingsStore.shared.hideFromDockAndAppSwitcher = $0 }
+                )
+            )
+            SettingsKit.RowDivider()
+            SettingsKit.Row("Accent color", description: "Colors buttons, switches and selections.", systemImage: "paintpalette") {
+                self.accentSwatches
+            }
+            SettingsKit.RowDivider()
+            SettingsKit.ToggleRow(
+                "Don’t count weekends against streaks",
+                description: "Streaks in Stats skip Saturdays and Sundays.",
+                systemImage: "calendar",
+                isOn: Binding(
+                    get: { SettingsStore.shared.weekendsDontBreakStreak },
+                    set: { SettingsStore.shared.weekendsDontBreakStreak = $0 }
+                )
+            )
+        }
+    }
+
+    private var accentSwatches: some View {
+        HStack(spacing: Space.xs) {
+            ForEach(SettingsStore.AccentColorOption.allCases) { option in
+                let isSelected = self.settings.accentColorOption == option
+                Button {
+                    withMotion(Motion.snappy) {
+                        self.settings.accentColorOption = option
+                    }
+                } label: {
+                    Circle()
+                        .fill(Color(hex: option.hex) ?? self.theme.palette.secondaryText)
+                        .frame(width: AccentSwatch.diameter, height: AccentSwatch.diameter)
+                        .padding(AccentSwatch.ringGap)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(
+                                    isSelected ? self.theme.palette.primaryText : .clear,
+                                    lineWidth: AccentSwatch.ringWidth
+                                )
+                        )
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help(option.rawValue)
+                .accessibilityLabel(option.rawValue)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+    }
+
+    private enum AccentSwatch {
+        static let diameter: CGFloat = 16
+        static let ringGap: CGFloat = 3
+        static let ringWidth: CGFloat = 1.5
+    }
+
+    // MARK: - Updates
+
+    private var updatesSection: some View {
+        SettingsKit.Section(
+            "Software Updates",
+            footer: "Updates are checked against SayIt’s signing key before they install.",
+            accessory: {
+                Text("Version \(self.updateController.currentVersion.displayName)")
+                    .font(AppFont.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(self.theme.palette.secondaryText)
+                    .textSelection(.enabled)
+            }
+        ) {
+            SettingsKit.ToggleRow(
+                "Check for updates automatically",
+                description: "Checks GitHub Releases once a day. SayIt always asks before installing.",
+                systemImage: "arrow.triangle.2.circlepath",
+                isOn: Binding(
+                    get: { self.updateController.automaticChecksEnabled },
+                    set: { self.updateController.setAutomaticChecksEnabled($0) }
+                )
+            )
+            SettingsKit.RowDivider()
+            SettingsKit.Row(
+                "Check now",
+                description: self.updateController.lastCheckDate.map {
+                    "Last checked \($0.formatted(date: .abbreviated, time: .shortened))."
+                } ?? "Not checked yet.",
+                systemImage: "arrow.clockwise"
+            ) {
+                HStack(spacing: Space.sm) {
+                    Button("Release Notes") {
+                        self.updateController.openReleasesPage()
+                    }
+                    .buttonStyle(.sayItQuiet)
+
+                    Button("Check for Updates") {
+                        self.updateController.checkForUpdates()
+                    }
+                    .buttonStyle(.sayItSecondary)
+                }
+            }
+
+            if let lastErrorMessage = self.updateController.lastErrorMessage {
+                SettingsKit.Notice(.warning, title: "The last update check didn’t finish", message: lastErrorMessage)
+                    .padding([.horizontal, .bottom], Space.lg)
+            }
+        }
     }
 }
 
@@ -1131,61 +803,92 @@ struct FillerWordsEditor: View {
     @State private var newWord: String = ""
     @Environment(\.theme) private var theme
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Filler words to remove:")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+    private var trimmedNewWord: String {
+        self.newWord.trimmingCharacters(in: .whitespaces).lowercased()
+    }
 
-            // Word chips
-            FlowLayout(spacing: 6) {
-                ForEach(self.fillerWords, id: \.self) { word in
-                    HStack(spacing: 4) {
-                        Text(word)
-                            .font(.caption)
-                        Button {
-                            self.removeWord(word)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.caption2)
+    private var isDuplicate: Bool {
+        self.fillerWords.contains(self.trimmedNewWord)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            Text("Words to remove")
+                .font(AppFont.captionEmphasis)
+                .foregroundStyle(self.theme.palette.secondaryText)
+
+            if self.fillerWords.isEmpty {
+                Text("No words yet. Add one below or restore the defaults.")
+                    .font(AppFont.callout)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+            } else {
+                FlowLayout(spacing: Space.sm) {
+                    ForEach(self.fillerWords, id: \.self) { word in
+                        HStack(spacing: Space.xs) {
+                            Text(word)
+                                .font(AppFont.transcript)
+                                .foregroundStyle(self.theme.palette.primaryText)
+                            Button {
+                                withMotion(Motion.state) { self.removeWord(word) }
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(AppFont.iconSmall)
+                                    .foregroundStyle(self.theme.palette.secondaryText)
+                                    .frame(width: Space.lg, height: Space.lg)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove “\(word)”")
+                            .accessibilityLabel("Remove \(word)")
                         }
-                        .buttonStyle(.plain)
+                        .padding(.leading, Space.sm)
+                        .padding(.trailing, Space.xs)
+                        .padding(.vertical, Space.xxs)
+                        .background(
+                            Capsule().fill(self.theme.palette.surfaceSunken)
+                        )
+                        .overlay(Capsule().strokeBorder(self.theme.palette.hairline, lineWidth: 1))
+                        .motionTransition()
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(.quaternary))
                 }
             }
 
-            // Add new word
-            HStack(spacing: 8) {
-                TextField("Add word", text: self.$newWord)
+            HStack(spacing: Space.sm) {
+                TextField("Add a word", text: self.$newWord)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 100)
+                    .frame(width: SettingsKit.pickerWidth)
                     .onSubmit { self.addWord() }
 
                 Button("Add") { self.addWord() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(self.newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .buttonStyle(.sayIt(.secondary, size: .small))
+                    .disabled(self.trimmedNewWord.isEmpty || self.isDuplicate)
 
                 Spacer()
 
-                Button("Reset") {
-                    self.fillerWords = SettingsStore.defaultFillerWords
+                Button("Restore Defaults") {
+                    withMotion(Motion.state) {
+                        self.fillerWords = SettingsStore.defaultFillerWords
+                    }
                     SettingsStore.shared.fillerWords = self.fillerWords
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(.sayIt(.quiet, size: .small))
+                .disabled(self.fillerWords == SettingsStore.defaultFillerWords)
+            }
+
+            if self.isDuplicate && !self.trimmedNewWord.isEmpty {
+                Text("“\(self.trimmedNewWord)” is already on the list.")
+                    .font(AppFont.caption)
+                    .foregroundStyle(self.theme.palette.secondaryText)
             }
         }
     }
 
     private func addWord() {
-        let word = self.newWord.trimmingCharacters(in: .whitespaces).lowercased()
+        let word = self.trimmedNewWord
         guard !word.isEmpty, !self.fillerWords.contains(word) else { return }
-        self.fillerWords.append(word)
+        withMotion(Motion.state) {
+            self.fillerWords.append(word)
+        }
         SettingsStore.shared.fillerWords = self.fillerWords
         self.newWord = ""
     }
@@ -1206,7 +909,7 @@ struct FlowLayout: Layout {
         var lastWidth: CGFloat = 0
     }
 
-    var spacing: CGFloat = 8
+    var spacing: CGFloat = Space.sm
 
     func makeCache(subviews: Subviews) -> Cache {
         Cache(sizes: Array(repeating: .zero, count: subviews.count))

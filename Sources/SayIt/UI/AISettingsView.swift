@@ -2,7 +2,7 @@
 //  AISettingsView.swift
 //  SayIt
 //
-//  Extracted from ContentView.swift to reduce monolithic architecture.
+//  Shared types for the Voice Engine and AI Enhancement settings pages.
 //  Created: 2025-12-14
 //
 
@@ -74,47 +74,4 @@ enum AISettingsLayout {
     static let primaryActionMinWidth: CGFloat = 150
     static let promptActionMinWidth: CGFloat = 90
     static let rowLeadingIndent: CGFloat = labelWidth + 12
-}
-
-struct AISettingsView: View {
-    let appServices: AppServices
-    let menuBarManager: MenuBarManager
-    let theme: AppTheme
-
-    @StateObject private var voiceViewModel: VoiceEngineSettingsViewModel
-    @StateObject private var enhancementViewModel: AIEnhancementSettingsViewModel
-
-    init(appServices: AppServices, menuBarManager: MenuBarManager, theme: AppTheme) {
-        self.appServices = appServices
-        self.menuBarManager = menuBarManager
-        self.theme = theme
-        _voiceViewModel = StateObject(wrappedValue: VoiceEngineSettingsViewModel(
-            settings: SettingsStore.shared,
-            appServices: appServices
-        ))
-        _enhancementViewModel = StateObject(wrappedValue: AIEnhancementSettingsViewModel(
-            settings: SettingsStore.shared,
-            menuBarManager: menuBarManager,
-            promptTest: DictationPromptTestCoordinator.shared
-        ))
-    }
-
-    var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
-                VoiceEngineSettingsView(
-                    viewModel: self.voiceViewModel,
-                    settings: self.voiceViewModel.settings,
-                    theme: self.theme
-                )
-                AIEnhancementSettingsView(
-                    viewModel: self.enhancementViewModel,
-                    settings: self.enhancementViewModel.settings,
-                    promptTest: self.enhancementViewModel.promptTest,
-                    theme: self.theme
-                )
-            }
-            .padding(14)
-        }
-    }
 }
