@@ -27,9 +27,13 @@ final class MeetingTranscriptionService: ObservableObject {
     @Published var currentStatus: String = ""
     @Published var error: String?
     @Published var result: TranscriptionResult?
+    /// True after the user cancelled the last run; cleared by `reset()` or a new run.
+    @Published var wasCancelled: Bool = false
 
     // Share the ASR service instance to avoid loading models twice
     private let asrService: ASRService
+    /// Identifies the current run; a cancelled run's late results are discarded.
+    private var runID = UUID()
 
     init(asrService: ASRService) {
         self.asrService = asrService
@@ -44,13 +48,13 @@ final class MeetingTranscriptionService: ObservableObject {
         var errorDescription: String? {
             switch self {
             case let .modelLoadFailed(msg):
-                return "Failed to load ASR models: \(msg)"
+                return "The speech model couldn’t be loaded. \(msg)"
             case let .audioConversionFailed(msg):
-                return "Failed to convert audio: \(msg)"
+                return "The audio couldn’t be read. \(msg)"
             case let .transcriptionFailed(msg):
-                return "Transcription failed: \(msg)"
+                return "Transcription failed. \(msg)"
             case let .fileNotSupported(msg):
-                return "File format not supported: \(msg)"
+                return "This file type isn’t supported. \(msg)"
             }
         }
     }
@@ -79,13 +83,13 @@ final class MeetingTranscriptionService: ObservableObject {
     func initializeModels() async throws {
         guard !self.asrService.isAsrReady else { return }
 
-        self.currentStatus = "Preparing ASR models..."
+        self.currentStatus = "Preparing the speech model…"
         self.progress = 0.1
 
         do {
             try await self.asrService.ensureAsrReady()
 
-            self.currentStatus = "Models ready"
+            self.currentStatus = "Speech model ready"
             self.progress = 0.0
         } catch {
             throw TranscriptionError.modelLoadFailed(error.localizedDescription)
@@ -96,14 +100,19 @@ final class MeetingTranscriptionService: ObservableObject {
     /// - Parameters:
     ///   - fileURL: URL to the audio/video file
     func transcribeFile(_ fileURL: URL) async throws -> TranscriptionResult {
+        let runID = UUID()
+        self.runID = runID
         self.isTranscribing = true
+        self.wasCancelled = false
         error = nil
         self.progress = 0.0
         let startTime = Date()
 
         defer {
-            isTranscribing = false
-            progress = 0.0
+            if self.runID == runID {
+                isTranscribing = false
+                progress = 0.0
+            }
         }
 
         do {
@@ -115,7 +124,7 @@ final class MeetingTranscriptionService: ObservableObject {
             // Get the current transcription provider (works for both Parakeet and Whisper)
             let provider = self.asrService.fileTranscriptionProvider
             guard provider.isReady else {
-                throw TranscriptionError.modelLoadFailed("Transcription provider not ready")
+                throw TranscriptionError.modelLoadFailed("Open Settings › Voice Engine to download or activate a model.")
             }
 
             // Check file extension
@@ -124,11 +133,11 @@ final class MeetingTranscriptionService: ObservableObject {
 
             guard supportedFormats.contains(fileExtension) else {
                 throw TranscriptionError
-                    .fileNotSupported("Format .\(fileExtension) not supported. Supported: \(supportedFormats.joined(separator: ", "))")
+                    .fileNotSupported("Use one of: \(supportedFormats.map { $0.uppercased() }.joined(separator: ", ")).")
             }
 
             // Get audio duration for progress display
-            self.currentStatus = "Analyzing audio file..."
+            self.currentStatus = "Reading the file…"
             self.progress = 0.2
 
             let asset = AVAsset(url: fileURL)
@@ -157,7 +166,7 @@ final class MeetingTranscriptionService: ObservableObject {
             do {
                 audioFile = try AVAudioFile(forReading: fileURL)
             } catch {
-                throw TranscriptionError.audioConversionFailed("Could not open audio file: \(error.localizedDescription)")
+                throw TranscriptionError.audioConversionFailed(error.localizedDescription)
             }
 
             let fileFormat = audioFile.processingFormat
@@ -171,9 +180,11 @@ final class MeetingTranscriptionService: ObservableObject {
             let sourceFramesPerChunk = AVAudioFrameCount(Double(samplesPerChunk) / resampleRatio)
             var currentFrame: AVAudioFramePosition = 0
 
-            self.currentStatus = duration > 0 ? "Transcribing audio (\(Int(duration))s)..." : "Transcribing audio..."
+            self.currentStatus = "Transcribing…"
 
             while currentFrame < audioFile.length {
+                try self.checkCancellation(runID)
+
                 let remainingFrames = AVAudioFrameCount(audioFile.length - currentFrame)
                 let framesToRead = min(sourceFramesPerChunk, remainingFrames)
 
@@ -205,6 +216,7 @@ final class MeetingTranscriptionService: ObservableObject {
 
                 // Transcribe this chunk using the provider (works for both Parakeet and Whisper)
                 let chunkResult = try await provider.transcribe(samples)
+                try self.checkCancellation(runID)
 
                 if !chunkResult.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     allTranscriptions.append(chunkResult.text)
@@ -217,7 +229,7 @@ final class MeetingTranscriptionService: ObservableObject {
                 // Update progress
                 let progressPercent = Double(currentFrame) / Double(audioFile.length)
                 self.progress = 0.3 + (progressPercent * 0.6) // Progress from 30% to 90%
-                self.currentStatus = "Transcribing... \(Int(progressPercent * 100))%"
+                self.currentStatus = "Transcribing… \(Int(progressPercent * 100))%"
             }
 
             if allTranscriptions.isEmpty {
@@ -233,7 +245,7 @@ final class MeetingTranscriptionService: ObservableObject {
 
             let transcriptionResult = (text: finalText, confidence: avgConfidence)
 
-            self.currentStatus = "Complete!"
+            self.currentStatus = "Done"
             self.progress = 1.0
 
             let processingTime = Date().timeIntervalSince(startTime)
@@ -259,6 +271,13 @@ final class MeetingTranscriptionService: ObservableObject {
             self.result = result
             return result
 
+        } catch is CancellationError {
+            if self.runID == runID {
+                self.currentStatus = ""
+                self.error = nil
+                self.wasCancelled = true
+            }
+            throw CancellationError()
         } catch let error as TranscriptionError {
             self.error = error.localizedDescription
             AnalyticsService.shared.capture(
@@ -312,10 +331,27 @@ final class MeetingTranscriptionService: ObservableObject {
         try jsonData.write(to: destinationURL)
     }
 
+    /// Stops the current run. The UI returns to idle immediately; a chunk already being
+    /// transcribed finishes in the background and its result is discarded.
+    func cancel() {
+        guard self.isTranscribing else { return }
+        self.runID = UUID()
+        self.isTranscribing = false
+        self.progress = 0.0
+        self.currentStatus = ""
+        self.wasCancelled = true
+    }
+
+    private func checkCancellation(_ runID: UUID) throws {
+        try Task.checkCancellation()
+        guard self.runID == runID else { throw CancellationError() }
+    }
+
     /// Reset the service state
     func reset() {
         self.result = nil
         self.error = nil
+        self.wasCancelled = false
         self.currentStatus = ""
         self.progress = 0.0
     }

@@ -42,9 +42,14 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
     var previewText: String {
         let text = self.processedText.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.count > 80 {
-            return String(text.prefix(77)) + "..."
+            return String(text.prefix(79)) + "…"
         }
         return text
+    }
+
+    /// Word count of the final text.
+    var wordCount: Int {
+        TranscriptionHistoryStore.wordCount(in: self.processedText)
     }
 
     /// Relative time string for display
@@ -70,6 +75,8 @@ final class TranscriptionHistoryStore: ObservableObject {
     static let shared = TranscriptionHistoryStore()
 
     private let defaults = UserDefaults.standard
+    /// False for in-memory stores (previews and snapshot tests); they never touch UserDefaults.
+    private let isPersistent: Bool
 
     private enum Keys {
         static let transcriptionHistory = "TranscriptionHistoryEntries"
@@ -79,7 +86,14 @@ final class TranscriptionHistoryStore: ObservableObject {
     @Published var selectedEntryID: UUID?
 
     private init() {
+        self.isPersistent = true
         self.loadEntries()
+    }
+
+    /// In-memory store seeded with `entries`. Never reads or writes user data.
+    init(inMemoryEntries entries: [TranscriptionHistoryEntry]) {
+        self.isPersistent = false
+        self.entries = entries
     }
 
     // MARK: - Public Methods
@@ -138,6 +152,14 @@ final class TranscriptionHistoryStore: ObservableObject {
         self.saveEntries()
     }
 
+    /// Puts a deleted entry back where it was (used by Undo).
+    func restoreEntry(_ entry: TranscriptionHistoryEntry, at index: Int) {
+        guard !self.entries.contains(where: { $0.id == entry.id }) else { return }
+        let clampedIndex = min(max(index, 0), self.entries.count)
+        self.entries.insert(entry, at: clampedIndex)
+        self.saveEntries()
+    }
+
     /// Clear all history
     func clearAllHistory() {
         self.entries.removeAll()
@@ -190,7 +212,7 @@ final class TranscriptionHistoryStore: ObservableObject {
     }
 
     private func saveEntries() {
-        if let encoded = try? JSONEncoder().encode(entries) {
+        if self.isPersistent, let encoded = try? JSONEncoder().encode(entries) {
             self.defaults.set(encoded, forKey: Keys.transcriptionHistory)
         }
         objectWillChange.send()
@@ -203,13 +225,17 @@ extension TranscriptionHistoryStore {
     // MARK: - Word Counting
 
     /// Count words in a string (handles multiple spaces, newlines)
-    private func wordCount(in text: String) -> Int {
+    nonisolated static func wordCount(in text: String) -> Int {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return 0 }
 
         let words = trimmed.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
         return words.count
+    }
+
+    private func wordCount(in text: String) -> Int {
+        Self.wordCount(in: text)
     }
 
     /// Total words across all transcriptions
@@ -467,7 +493,7 @@ extension TranscriptionHistoryStore {
 
         return appCounts
             .map { (app: $0.key, count: $0.value) }
-            .sorted { $0.count > $1.count }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.app < $1.app }
     }
 
     /// Top N apps formatted for display
@@ -497,30 +523,21 @@ extension TranscriptionHistoryStore {
             hourCounts[hour, default: 0] += 1
         }
 
-        return hourCounts.max(by: { $0.value < $1.value })?.key
+        return hourCounts.max(by: { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key })?.key
     }
 
-    /// Formatted peak hour range (e.g., "2-3 PM")
+    /// Formatted, localized peak hour range (e.g., "2 – 3 PM")
     var peakHourFormatted: String {
-        guard let hour = peakHour else { return "N/A" }
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h a"
+        guard let hour = peakHour else { return "—" }
 
         let calendar = Calendar.current
-        var components = DateComponents()
-        components.hour = hour
-
-        guard let startDate = calendar.date(from: components),
+        guard let startDate = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: Date()),
               let endDate = calendar.date(byAdding: .hour, value: 1, to: startDate)
         else {
-            return "N/A"
+            return "—"
         }
 
-        let startStr = formatter.string(from: startDate)
-        let endStr = formatter.string(from: endDate)
-
-        return "\(startStr)-\(endStr)"
+        return (startDate..<endDate).formatted(.interval.hour())
     }
 
     // MARK: - Personal Records
