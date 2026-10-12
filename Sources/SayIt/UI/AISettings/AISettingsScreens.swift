@@ -16,15 +16,14 @@ struct VoiceEngineSettingsScreen: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
-                VoiceEngineSettingsView(
-                    viewModel: self.viewModel,
-                    settings: self.viewModel.settings,
-                    theme: self.theme
-                )
-            }
-            .padding(14)
+        SettingsKit.Page(
+            title: "Voice Engine",
+            subtitle: "The speech model that turns your voice into text. Everything runs on this Mac."
+        ) {
+            VoiceEngineSettingsView(
+                viewModel: self.viewModel,
+                settings: self.viewModel.settings
+            )
         }
     }
 }
@@ -46,16 +45,16 @@ struct AIEnhancementSettingsScreen: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
-                AIEnhancementSettingsView(
-                    viewModel: self.viewModel,
-                    settings: self.viewModel.settings,
-                    promptTest: self.viewModel.promptTest,
-                    theme: self.theme
-                )
-            }
-            .padding(14)
+        SettingsKit.Page(
+            title: "AI Enhancement",
+            subtitle: "Optional clean-up of your transcript by an AI model you choose."
+        ) {
+            AIEnhancementSettingsView(
+                viewModel: self.viewModel,
+                settings: self.viewModel.settings,
+                promptTest: self.viewModel.promptTest,
+                theme: self.theme
+            )
         }
     }
 }

@@ -1,6 +1,20 @@
 import Combine
 import SwiftUI
 
+/// A problem on the Voice Engine page, shown inline next to the model it concerns.
+struct VoiceEngineIssue: Identifiable, Equatable {
+    enum Retry: Equatable {
+        case download(SettingsStore.SpeechModel)
+        case activate(SettingsStore.SpeechModel)
+        case delete(SettingsStore.SpeechModel)
+    }
+
+    let id = UUID()
+    let title: String
+    let message: String
+    let retry: Retry?
+}
+
 @MainActor
 final class VoiceEngineSettingsViewModel: ObservableObject {
     let settings: SettingsStore
@@ -15,6 +29,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     @Published var showSpeechFilters: Bool = false
 
     @Published var selectedSpeechProvider: SettingsStore.SpeechModel.Provider
+    /// The model whose details are expanded in the list. Selecting a model never
+    /// changes the engine in use; only "Use" does.
     @Published var previewSpeechModel: SettingsStore.SpeechModel
     @Published var showAdvancedSpeechInfo: Bool = false
     @Published var suppressSpeechProviderSync: Bool = false
@@ -24,8 +40,14 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     @Published var downloadingModel: SettingsStore.SpeechModel?
     /// Download progress for the current model (0.0 to 1.0)
     @Published var downloadProgress: Double = 0.0
+    /// True after the user cancelled, until the download task has actually stopped.
+    @Published var isCancellingDownload = false
+    /// The most recent failure, shown inline until dismissed or retried.
+    @Published var issue: VoiceEngineIssue?
 
     @Published var removeFillerWordsEnabled: Bool
+
+    private var downloadTask: Task<Void, Never>?
 
     init(settings: SettingsStore, appServices: AppServices) {
         self.settings = settings
@@ -95,9 +117,20 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         return models
     }
 
+    /// Whether model actions should be blocked (recording or another download running).
+    var isBusy: Bool {
+        self.asr.isRunning || self.downloadingModel != nil
+    }
+
+    /// Loading state of the engine currently in use.
+    var isActiveModelLoading: Bool {
+        (self.asr.isLoadingModel || self.asr.isDownloadingModel) && !self.asr.isAsrReady
+    }
+
     func activateSpeechModel(_ model: SettingsStore.SpeechModel) {
         guard !self.asr.isRunning else { return }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+        self.issue = nil
+        withMotion(Motion.state) {
             self.settings.selectedSpeechModel = model
             self.previewSpeechModel = model
             self.setSelectedSpeechProvider(model.provider)
@@ -107,10 +140,12 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             do {
                 try await self.asr.ensureAsrReady()
             } catch {
-                DebugLogger.shared.error("Failed to prepare model after activation: \(error)", source: "AISettingsView")
-                self.asr.errorTitle = "Model Could Not Load"
-                self.asr.errorMessage = error.localizedDescription
-                self.asr.showError = true
+                DebugLogger.shared.error("Failed to prepare model after activation: \(error)", source: "VoiceEngineVM")
+                self.issue = VoiceEngineIssue(
+                    title: "\(model.uiName) couldn’t load",
+                    message: error.localizedDescription,
+                    retry: .activate(model)
+                )
             }
         }
     }
@@ -118,21 +153,18 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     func downloadSpeechModel(_ model: SettingsStore.SpeechModel) {
         guard !self.asr.isRunning else { return }
         guard self.downloadingModel == nil else { return } // Prevent concurrent downloads
+        self.issue = nil
         self.downloadingModel = model
         self.downloadProgress = 0.0
+        self.isCancellingDownload = false
 
-        Task {
-            // Mark this model as downloading
-            self.downloadingModel = model
-            self.downloadProgress = 0.0
-
+        self.downloadTask = Task {
             do {
-                // Download the model WITHOUT changing the active selection
-                // Capture the model ID to guard against stale progress callbacks
+                // Download the model WITHOUT changing the active selection.
+                // Capture the model ID to guard against stale progress callbacks.
                 let downloadingModelId = model.id
                 try await self.asr.downloadModel(model, progressHandler: { [weak self] progress in
                     Task { @MainActor in
-                        // Only update progress if we're still downloading this specific model
                         guard let self, self.downloadingModel?.id == downloadingModelId else { return }
                         self.downloadProgress = progress
                     }
@@ -145,49 +177,87 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
                     try await self.asr.ensureAsrReady()
                     DebugLogger.shared.info("Downloaded active model is ready", source: "VoiceEngineVM")
                 }
+            } catch is CancellationError {
+                DebugLogger.shared.info("Model download cancelled: \(model.displayName)", source: "VoiceEngineVM")
             } catch {
-                DebugLogger.shared.error("Failed to download model \(model.displayName): \(error)", source: "VoiceEngineVM")
-                await MainActor.run {
-                    self.asr.errorTitle = "Model Download Failed"
-                    self.asr.errorMessage = error.localizedDescription
-                    self.asr.showError = true
+                if self.isCancellingDownload || Task.isCancelled {
+                    DebugLogger.shared.info("Model download stopped after cancel: \(model.displayName)", source: "VoiceEngineVM")
+                } else {
+                    DebugLogger.shared.error("Failed to download model \(model.displayName): \(error)", source: "VoiceEngineVM")
+                    self.issue = VoiceEngineIssue(
+                        title: "\(model.uiName) didn’t finish downloading",
+                        message: error.localizedDescription,
+                        retry: .download(model)
+                    )
                 }
             }
 
-            // Clear downloading state
             self.downloadingModel = nil
             self.downloadProgress = 0.0
+            self.isCancellingDownload = false
+            self.downloadTask = nil
         }
+    }
+
+    /// Stops the current download. The row shows "Cancelling…" until the download
+    /// task has actually stopped, so the UI never claims more than happened.
+    func cancelDownload() {
+        guard self.downloadingModel != nil, let task = self.downloadTask else { return }
+        self.isCancellingDownload = true
+        task.cancel()
     }
 
     func deleteSpeechModel(_ model: SettingsStore.SpeechModel) {
         guard !self.asr.isRunning else { return }
+        self.issue = nil
         let previousActive = self.settings.selectedSpeechModel
 
         Task {
             let shouldRestore = previousActive != model
-            await MainActor.run {
-                if shouldRestore {
-                    self.suppressSpeechProviderSync = true
-                }
-                self.settings.selectedSpeechModel = model
+            if shouldRestore {
+                self.suppressSpeechProviderSync = true
+            }
+            self.settings.selectedSpeechModel = model
+            self.asr.resetTranscriptionProvider()
+
+            let succeeded = await self.deleteModels()
+
+            if shouldRestore {
+                self.skipNextSpeechModelSync = true
+                self.settings.selectedSpeechModel = previousActive
                 self.asr.resetTranscriptionProvider()
+                self.suppressSpeechProviderSync = false
             }
+            self.previewSpeechModel = model
 
-            defer {
-                Task { @MainActor in
-                    guard shouldRestore else { return }
-                    self.skipNextSpeechModelSync = true
-                    self.settings.selectedSpeechModel = previousActive
-                    self.asr.resetTranscriptionProvider()
-                    if self.previewSpeechModel == model {
-                        self.previewSpeechModel = model
-                    }
-                    self.suppressSpeechProviderSync = false
-                }
+            if !succeeded {
+                self.issue = VoiceEngineIssue(
+                    title: "\(model.uiName) couldn’t be deleted",
+                    message: self.lastDeleteError ?? "SayIt couldn’t remove the downloaded files.",
+                    retry: .delete(model)
+                )
             }
+        }
+    }
 
-            await self.deleteModels()
+    func retry(_ issue: VoiceEngineIssue) {
+        guard let retry = issue.retry else {
+            self.issue = nil
+            return
+        }
+        switch retry {
+        case let .download(model):
+            self.downloadSpeechModel(model)
+        case let .activate(model):
+            self.activateSpeechModel(model)
+        case let .delete(model):
+            self.deleteSpeechModel(model)
+        }
+    }
+
+    func dismissIssue() {
+        withMotion(Motion.exit) {
+            self.issue = nil
         }
     }
 
@@ -199,31 +269,45 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         let model = self.settings.selectedSpeechModel
         switch model {
         case .appleSpeech:
-            return "Apple Speech (Legacy) uses on-device recognition. No download required, works on Intel and Apple Silicon."
+            return "Apple Speech (Legacy) uses on-device recognition. No download required, works on Intel and Apple silicon."
         case .appleSpeechAnalyzer:
-            return "Apple Speech uses advanced on-device recognition with fast, accurate transcription. Requires macOS 26+."
+            return "Apple Speech uses advanced on-device recognition with fast, accurate transcription. Requires macOS 26 or later."
         case .parakeetTDT:
-            return "Parakeet TDT v3 uses CoreML and Neural Engine for fastest transcription (25 languages) on Apple Silicon."
+            return "Parakeet TDT v3 uses Core ML and the Neural Engine for the fastest transcription (25 languages) on Apple silicon."
         case .qwen3Asr:
-            return "Qwen3-ASR 1.7B runs locally on Apple Silicon. Supports Chinese, English, and mixed speech; transcribes when recording stops."
+            return "Qwen3-ASR 1.7B runs locally on Apple silicon. Supports Chinese, English and mixed speech; transcribes when recording stops."
         default:
             return "Whisper models support 99 languages and work on any Mac."
         }
     }
 
+    private var lastDeleteError: String?
+
     func downloadModels() async {
         do {
             try await self.asr.ensureAsrReady()
         } catch {
-            DebugLogger.shared.error("Failed to download models: \(error)", source: "AISettingsView")
+            DebugLogger.shared.error("Failed to download models: \(error)", source: "VoiceEngineVM")
+            let model = self.settings.selectedSpeechModel
+            self.issue = VoiceEngineIssue(
+                title: "\(model.uiName) couldn’t load",
+                message: error.localizedDescription,
+                retry: .activate(model)
+            )
         }
     }
 
-    func deleteModels() async {
+    /// Clears the active provider's model cache. Returns whether it succeeded.
+    @discardableResult
+    func deleteModels() async -> Bool {
         do {
             try await self.asr.clearModelCache()
+            self.lastDeleteError = nil
+            return true
         } catch {
-            DebugLogger.shared.error("Failed to delete models: \(error)", source: "AISettingsView")
+            DebugLogger.shared.error("Failed to delete models: \(error)", source: "VoiceEngineVM")
+            self.lastDeleteError = error.localizedDescription
+            return false
         }
     }
 
