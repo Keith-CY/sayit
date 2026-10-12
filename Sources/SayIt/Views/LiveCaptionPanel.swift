@@ -262,6 +262,9 @@ struct LiveCaptionContent: View {
         // minHeight 0 lets the area be shorter than its lines, so older ones scroll off.
         .frame(minHeight: 0, maxHeight: .infinity, alignment: .bottomLeading)
         .clipped()
+        // Clipping hides the lines above the area but not their hit area, which would
+        // cover the header's buttons. Clicks here fall through to the panel, which drags.
+        .allowsHitTesting(false)
         .mask(alignment: .top) {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)

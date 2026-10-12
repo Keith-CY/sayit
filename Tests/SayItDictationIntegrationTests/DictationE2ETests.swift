@@ -356,6 +356,15 @@ final class DictationE2ETests: XCTestCase {
     }
 
     @MainActor
+    func testLiveCaptionTranscript_longCommittedPhraseClosesItsNewLine() {
+        // Unbroken speech: Apple commits only when asked, about 10 s at a time.
+        var transcript = LiveCaptionTranscript()
+        XCTAssertEqual(transcript.applyFinal("first ten seconds", start: 0, end: 10), [0])
+        XCTAssertEqual(transcript.applyFinal("next ten seconds", start: 10, end: 20), [1], "Each phrase gets its own line")
+        XCTAssertEqual(transcript.lines.map(\.text), ["first ten seconds", "next ten seconds"])
+    }
+
+    @MainActor
     func testLiveCaptionTranscript_idleClosesOnlyWhenNoWordsAreForming() {
         var transcript = LiveCaptionTranscript()
         _ = transcript.applyFinal("Hello there.", start: 0, end: 1)

@@ -88,12 +88,13 @@ struct LiveCaptionTranscript: Equatable {
         if let index = self.openIndex {
             self.lines[index].text = Self.join(self.lines[index].text, phrase)
             self.lines[index].end = max(self.lines[index].end, end)
-            if self.lines[index].end - self.lines[index].start >= self.policy.maxLineSeconds {
-                closed.append(self.close(index))
-            }
         } else {
             self.lines.append(Line(id: self.nextID, text: phrase, start: start, end: end, state: .open))
             self.nextID += 1
+        }
+        // A new line counts too: after unbroken speech Apple commits ~10 s in one phrase.
+        if let index = self.openIndex, self.lines[index].end - self.lines[index].start >= self.policy.maxLineSeconds {
+            closed.append(self.close(index))
         }
         if let index = self.openIndex, let ended = self.speechEndedAt, self.lines[index].end <= ended + Self.timingTolerance {
             closed.append(self.close(index))
