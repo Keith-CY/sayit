@@ -112,6 +112,17 @@ struct LiveCaptionTranscript: Equatable {
         return [self.close(index)]
     }
 
+    /// Closes the open line now, e.g. because the next words are someone else's.
+    mutating func closeOpenLine() -> [Int] {
+        guard let index = self.openIndex else { return [] }
+        return [self.close(index)]
+    }
+
+    /// The open line's time span, if a line is open.
+    var openLineSpan: ClosedRange<Double>? {
+        self.openIndex.map { self.lines[$0].start...self.lines[$0].end }
+    }
+
     /// True when Apple has words that a heard pause should commit.
     var hasUncommittedWords: Bool {
         !self.volatileText.isEmpty || self.openIndex != nil

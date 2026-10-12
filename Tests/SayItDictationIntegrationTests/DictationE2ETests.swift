@@ -587,15 +587,34 @@ final class DictationE2ETests: XCTestCase {
         XCTAssertGreaterThanOrEqual(rows.filter(\.isRefined).count, script.count / 2)
     }
 
+    /// Runs Live Captions in silence for 30 s, for measuring their fixed cost from outside
+    /// (set LIVE_CAPTION_COST_SPEAKERS=1 to include speaker labels). Plays nothing.
+    @MainActor
+    func testLiveCaptionsCost_thirtySecondsOfSilence() async throws {
+        let speakers = ProcessInfo.processInfo.environment["LIVE_CAPTION_COST_SPEAKERS"] == "1"
+        let service = try Self.startLiveCaptions(env: "RUN_LIVE_CAPTION_COST_TESTS", labelSpeakers: speakers)
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 120) {
+            service.viewState.phase != .preparing && service.viewState.speakers != .preparing
+        }
+        print("LIVE_CAPTION_COST_READY speakers=\(service.viewState.speakers)")
+        try await Task.sleep(for: .seconds(30))
+        print("LIVE_CAPTION_COST_DONE")
+    }
+
     /// Starts Live Captions when `env` is set, with the microphone on only when given one.
     @MainActor
-    private static func startLiveCaptions(env: String, microphone: CaptionSourceFactory? = nil) throws -> LiveCaptionService {
+    private static func startLiveCaptions(
+        env: String,
+        microphone: CaptionSourceFactory? = nil,
+        labelSpeakers: Bool = false
+    ) throws -> LiveCaptionService {
         guard ProcessInfo.processInfo.environment[env] == "1" else {
             throw XCTSkip("Set \(env)=1 to play speech aloud and caption it.")
         }
         guard LiveCaptionService.isSupported else { throw XCTSkip("Live Captions need macOS 26.") }
         let service = LiveCaptionService.shared
-        service.start(includeMicrophone: microphone != nil, makeMicrophone: microphone)
+        service.start(includeMicrophone: microphone != nil, labelSpeakers: labelSpeakers, makeMicrophone: microphone)
         return service
     }
 
@@ -634,6 +653,91 @@ final class DictationE2ETests: XCTestCase {
             guard Date() < deadline else { return XCTFail("Timed out after \(timeout) s") }
             try await Task.sleep(for: .milliseconds(250))
         }
+    }
+
+    /// Two voices take turns; each line should be labeled with the right speaker.
+    @MainActor
+    func testLiveCaptionsEndToEnd_labelsTwoSpeakers() async throws {
+        let service = try Self.startLiveCaptions(env: "RUN_LIVE_CAPTION_E2E_TESTS", labelSpeakers: true)
+        defer { service.stop() }
+        // The first run downloads the speaker model (about 250 MB).
+        try await Self.waitUntil(timeout: 600) {
+            service.viewState.phase != .preparing && service.viewState.speakers != .preparing
+        }
+        XCTAssertEqual(service.viewState.speakers, .on)
+
+        let turns: [(String, String)] = [
+            ("Samantha", "Thanks for joining. Let's start with the release status."),
+            ("Reed (English (US))", "The build passed this morning, and the installer is signed."),
+            ("Samantha", "Great. Did we fix the slow first transcription?"),
+            ("Reed (English (US))", "Yes, the model now warms up while you are speaking."),
+            ("Samantha", "Perfect, let's ship it on Friday."),
+        ]
+        for (voice, text) in turns {
+            try await Self.say(text, voice: voice)
+            try await Task.sleep(for: .seconds(1))
+        }
+        try await Self.waitUntil(timeout: 30) {
+            let rows = service.viewState.rows
+            return rows.count >= turns.count && !rows.contains(where: \.isDraft)
+        }
+        // Diarization settles a moment after the words do.
+        try await Task.sleep(for: .seconds(2))
+
+        let rows = service.viewState.rows
+        for row in rows {
+            print("LIVE_CAPTION_SPEAKERS_LINE speaker=\(row.speaker.map(String.init) ?? "-") text=\(row.text)")
+        }
+        let speakers = rows.map(\.speaker)
+        XCTAssertGreaterThanOrEqual(Set(speakers.compactMap { $0 }).count, 2, "Two voices should get two labels: \(speakers)")
+        let changes = zip(speakers, speakers.dropFirst()).filter { $0 != $1 }.count
+        XCTAssertGreaterThanOrEqual(changes, 3, "Labels should follow the turns: \(speakers)")
+    }
+
+    @MainActor
+    func testSpeakerTurns_dominantSpeakerAndNumbering() {
+        let turns = SpeakerTurns(turns: [
+            .init(speaker: 2, start: 0, end: 3),
+            .init(speaker: 0, start: 3.2, end: 6),
+            .init(speaker: 2, start: 6.1, end: 6.4),
+        ])
+        XCTAssertEqual(turns.dominantSpeaker(in: 0.5...2.5), 2)
+        XCTAssertEqual(turns.dominantSpeaker(in: 2.5...6.5), 0, "Most of the span is speaker 0")
+        XCTAssertNil(turns.dominantSpeaker(in: 7...10), "Nobody was heard")
+        XCTAssertNil(turns.dominantSpeaker(in: 6.2...9), "Heard for under a quarter of the span")
+
+        var numbering = SpeakerNumbering()
+        XCTAssertEqual(numbering.number(for: 2), 1, "Numbered in order of first appearance")
+        XCTAssertEqual(numbering.number(for: 0), 2)
+        XCTAssertEqual(numbering.number(for: 2), 1)
+        XCTAssertEqual(numbering.count, 2)
+    }
+
+    @MainActor
+    func testLiveCaptionTurnLabels_onlyWhereTheSpeakerChanges() {
+        func row(_ id: String, _ source: LiveCaptionSource, _ speaker: Int?) -> LiveCaptionViewState.Row {
+            LiveCaptionViewState.Row(id: id, source: source, text: id, isDraft: false, speaker: speaker)
+        }
+        let labels = LiveCaptionViewState.turnLabels(for: [
+            row("a", .macAudio, 1),
+            row("b", .macAudio, 1),
+            row("c", .macAudio, 2),
+            row("d", .microphone, nil),
+            row("e", .macAudio, 2),
+            row("f", .macAudio, nil),
+        ])
+        XCTAssertEqual(labels, ["a": "Speaker 1", "c": "Speaker 2", "e": "Speaker 2"])
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_closeOpenLineForAnotherSpeaker() {
+        var transcript = LiveCaptionTranscript()
+        XCTAssertNil(transcript.openLineSpan)
+        _ = transcript.applyFinal("Thanks for joining.", start: 0.4, end: 2)
+        XCTAssertEqual(transcript.openLineSpan, 0.4...2)
+        XCTAssertEqual(transcript.closeOpenLine(), [0])
+        XCTAssertNil(transcript.openLineSpan)
+        XCTAssertEqual(transcript.closeOpenLine(), [])
     }
 
     @MainActor

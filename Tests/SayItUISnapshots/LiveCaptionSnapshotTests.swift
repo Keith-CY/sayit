@@ -14,10 +14,19 @@ final class LiveCaptionSnapshotTests: XCTestCase {
         _ id: String,
         _ text: String,
         from source: LiveCaptionSource = .macAudio,
+        speaker: Int? = nil,
         draft: Bool = false,
         forming: String = ""
     ) -> LiveCaptionViewState.Row {
-        LiveCaptionViewState.Row(id: id, source: source, text: text, formingTail: forming, isDraft: draft, isRefined: !draft)
+        LiveCaptionViewState.Row(
+            id: id,
+            source: source,
+            text: text,
+            formingTail: forming,
+            isDraft: draft,
+            isRefined: !draft,
+            speaker: speaker
+        )
     }
 
     private static let states: [(String, LiveCaptionViewState)] = [
@@ -56,6 +65,37 @@ final class LiveCaptionSnapshotTests: XCTestCase {
             phase: .listening,
             rows: [row("a", "We shipped the new onboarding last week.")],
             microphone: .unavailable
+        )),
+        ("11-speakers", LiveCaptionViewState(
+            phase: .listening,
+            rows: [
+                row("a", "The build passed this morning.", speaker: 2),
+                row("b", "Great. Did we fix the slow first transcription?", speaker: 1),
+                row("c", "Yes, the model now warms up while you speak,", speaker: 2),
+                row("d", "so the first one is as fast as the rest.", speaker: 2, draft: true),
+            ],
+            speakers: .on
+        )),
+        ("12-speakers-and-microphone", LiveCaptionViewState(
+            phase: .listening,
+            rows: [
+                row("a", "Did we fix the slow first transcription?", speaker: 1),
+                row("b", "修好了，现在开始说话时就会预热。", from: .microphone),
+                row("c", "Nice. Can you share the numbers?", speaker: 2),
+                row("d", "", from: .microphone, draft: true, forming: "Sure, I'll post them"),
+            ],
+            microphone: .on,
+            speakers: .on
+        )),
+        ("13-speakers-preparing", LiveCaptionViewState(
+            phase: .listening,
+            rows: [row("a", "We shipped the new onboarding last week.")],
+            speakers: .preparing
+        )),
+        ("14-speakers-unavailable", LiveCaptionViewState(
+            phase: .listening,
+            rows: [row("a", "We shipped the new onboarding last week.")],
+            speakers: .unavailable
         )),
     ]
 

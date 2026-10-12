@@ -25,6 +25,15 @@ struct LiveCaptionViewState: Equatable {
         case unavailable
     }
 
+    enum Speakers: Equatable {
+        case off
+        /// Downloading or loading the speaker model.
+        case preparing
+        case on
+        /// Turned on, but the speaker model couldn't be loaded.
+        case unavailable
+    }
+
     /// One caption line as shown.
     struct Row: Identifiable, Equatable {
         let id: String
@@ -37,14 +46,32 @@ struct LiveCaptionViewState: Equatable {
         var isDraft: Bool
         /// `text` is Qwen's.
         var isRefined = false
+        /// Who is speaking in Mac audio (1, 2, …), once more than one voice was heard.
+        var speaker: Int?
     }
 
     var phase: Phase = .preparing
     /// Oldest first, interleaved across sources by when they were spoken.
     var rows: [Row] = []
     var microphone: Microphone = .off
+    var speakers: Speakers = .off
     /// Nothing but digital silence has arrived for a while.
     var showsSilenceHint = false
+
+    /// Speaker names to show before rows that start a turn: a Mac audio row whose speaker
+    /// differs from the row above it. Continuing rows aren't labeled again.
+    static func turnLabels(for rows: [Row]) -> [String: String] {
+        var labels: [String: String] = [:]
+        var previous: (source: LiveCaptionSource, speaker: Int?)?
+        for row in rows {
+            if row.source == .macAudio, let speaker = row.speaker,
+               previous.map({ $0.source != .macAudio || $0.speaker != speaker }) ?? true {
+                labels[row.id] = "Speaker \(speaker)"
+            }
+            previous = (row.source, row.speaker)
+        }
+        return labels
+    }
 }
 
 enum LiveCaptionFailure: Equatable {
@@ -82,13 +109,14 @@ final class LiveCaptionService: ObservableObject {
     }
 
     func start() {
-        self.start(includeMicrophone: nil, makeMicrophone: nil)
+        self.start(includeMicrophone: nil, labelSpeakers: nil, makeMicrophone: nil)
     }
 
     /// - Parameters:
     ///   - includeMicrophone: Overrides the saved setting without changing it (tests).
+    ///   - labelSpeakers: Overrides the saved setting without changing it (tests).
     ///   - makeMicrophone: Replaces the real microphone (tests).
-    func start(includeMicrophone: Bool?, makeMicrophone: CaptionSourceFactory?) {
+    func start(includeMicrophone: Bool?, labelSpeakers: Bool? = nil, makeMicrophone: CaptionSourceFactory?) {
         guard Self.isSupported, !self.isOn else { return }
         guard #available(macOS 26.0, *) else { return }
         self.isOn = true
@@ -97,6 +125,7 @@ final class LiveCaptionService: ObservableObject {
 
         let session = LiveCaptionSession(
             includeMicrophone: includeMicrophone ?? SettingsStore.shared.liveCaptionsIncludeMicrophone,
+            labelSpeakers: labelSpeakers ?? SettingsStore.shared.liveCaptionsLabelSpeakers,
             makeMicrophone: makeMicrophone
         ) { [weak self] state in
             self?.viewState = state
@@ -111,6 +140,14 @@ final class LiveCaptionService: ObservableObject {
         SettingsStore.shared.liveCaptionsIncludeMicrophone = enabled
         if #available(macOS 26.0, *), let session = self.session as? LiveCaptionSession {
             session.setMicrophoneEnabled(enabled)
+        }
+    }
+
+    /// Turns speaker labels on or off, and remembers the choice.
+    func setSpeakerLabelsEnabled(_ enabled: Bool) {
+        SettingsStore.shared.liveCaptionsLabelSpeakers = enabled
+        if #available(macOS 26.0, *), let session = self.session as? LiveCaptionSession {
+            session.setSpeakerLabelsEnabled(enabled)
         }
     }
 
@@ -165,7 +202,13 @@ private final class LiveCaptionSession {
 
     private var phase: LiveCaptionViewState.Phase = .preparing
     private var microphoneState: LiveCaptionViewState.Microphone
+    private var speakerState: LiveCaptionViewState.Speakers
     private var showsSilenceHint = false
+
+    private var speakerTracker: SpeakerTracker?
+    /// Mac audio time at which the tracker started hearing audio (its time zero).
+    private var speakerTimeOffset: Double = 0
+    private var speakerNumbering = SpeakerNumbering()
 
     private let macAudio = CaptionPipeline(source: .macAudio)
     private var microphone: CaptionPipeline?
@@ -183,11 +226,13 @@ private final class LiveCaptionSession {
 
     init(
         includeMicrophone: Bool,
+        labelSpeakers: Bool,
         makeMicrophone: CaptionSourceFactory?,
         onUpdate: @escaping (LiveCaptionViewState) -> Void
     ) {
         self.onUpdate = onUpdate
         self.microphoneState = includeMicrophone ? .on : .off
+        self.speakerState = labelSpeakers ? .preparing : .off
         self.makeMicrophone = makeMicrophone ?? { MicrophoneCapture(onSamples: $0) }
         self.checksMicrophonePermission = makeMicrophone == nil
         (self.refineSignal, self.refineSignalContinuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -228,6 +273,9 @@ private final class LiveCaptionSession {
                 self?.tick()
             }
         }
+        if self.speakerState == .preparing {
+            Task { await self.startSpeakers() }
+        }
         if self.microphoneState == .on {
             await self.startMicrophone()
         }
@@ -239,10 +287,61 @@ private final class LiveCaptionSession {
         self.refineTask?.cancel()
         self.refineSignalContinuation.finish()
         self.dictationObserver = nil
+        self.macAudio.feed.attach(nil)
+        self.speakerTracker?.stop()
+        self.speakerTracker = nil
         await self.macAudio.stop()
         await self.microphone?.stop()
         self.microphone = nil
         AppServices.shared.asr.releaseQwenAfterLiveCaptions()
+    }
+
+    // MARK: - Speakers
+
+    func setSpeakerLabelsEnabled(_ enabled: Bool) {
+        guard !self.isStopped else { return }
+        if enabled {
+            guard self.speakerTracker == nil else { return }
+            self.speakerState = .preparing
+            self.publish()
+            if self.phase == .listening {
+                Task { await self.startSpeakers() }
+            }
+        } else {
+            self.macAudio.feed.attach(nil)
+            self.speakerTracker?.stop()
+            self.speakerTracker = nil
+            self.speakerNumbering = SpeakerNumbering()
+            self.speakerState = .off
+            self.publish()
+        }
+    }
+
+    private func startSpeakers() async {
+        let tracker = SpeakerTracker()
+        self.speakerTracker = tracker
+        do {
+            try await tracker.prepare()
+        } catch {
+            DebugLogger.shared.error("Live Captions: speaker model unavailable: \(error)", source: "LiveCaptions")
+            guard self.speakerTracker === tracker else { return }
+            self.speakerTracker = nil
+            self.speakerState = .unavailable
+            return self.publish()
+        }
+        guard self.speakerTracker === tracker, !self.isStopped else { return tracker.stop() }
+        self.speakerTimeOffset = self.macAudio.timeline.duration
+        self.macAudio.feed.attach { tracker.append($0) }
+        self.speakerState = .on
+        DebugLogger.shared.info("Live Captions: speaker labels on", source: "LiveCaptions")
+        self.publish()
+    }
+
+    /// The diarizer's speaker heard most during a span of Mac audio time.
+    private func speaker(during range: ClosedRange<Double>) -> Int? {
+        guard self.speakerState == .on, let tracker = self.speakerTracker else { return nil }
+        let shift = self.speakerTimeOffset
+        return tracker.turns.dominantSpeaker(in: (range.lowerBound - shift)...(range.upperBound - shift))
     }
 
     // MARK: - Microphone
@@ -313,6 +412,12 @@ private final class LiveCaptionSession {
         case let .volatile(text, start):
             self.closed(pipeline.transcript.applyVolatile(text, start: start), in: pipeline)
         case let .final(text, start, end):
+            // Someone else is speaking: end the open line, so each line has one speaker.
+            if pipeline.source == .macAudio, let open = pipeline.transcript.openLineSpan,
+               let current = self.speaker(during: open), let next = self.speaker(during: start...max(start, end)),
+               current != next {
+                self.closed(pipeline.transcript.closeOpenLine(), in: pipeline)
+            }
             self.closed(pipeline.transcript.applyFinal(text, start: start, end: end), in: pipeline)
         }
         self.publish()
@@ -499,10 +604,20 @@ private final class LiveCaptionSession {
             let macIsPlaying = self.macAudio.timeline.trailingSilence() < self.macAudio.transcript.policy.pauseSeconds
             rows += self.rows(of: microphone, hidingForming: macIsPlaying, hiding: Set(self.echoChecks.map(\.id)))
         }
+        var shown = rows.sorted { $0.time < $1.time }.suffix(Self.maxRows).map(\.row)
+        // One voice needs no name; label speakers once a second one is heard.
+        if self.speakerNumbering.count < 2 {
+            shown = shown.map { row in
+                var row = row
+                row.speaker = nil
+                return row
+            }
+        }
         self.onUpdate(LiveCaptionViewState(
             phase: self.phase,
-            rows: rows.sorted { $0.time < $1.time }.suffix(Self.maxRows).map(\.row),
+            rows: shown,
             microphone: self.microphoneState,
+            speakers: self.speakerState,
             showsSilenceHint: self.showsSilenceHint
         ))
     }
@@ -525,7 +640,10 @@ private final class LiveCaptionSession {
                 text: line.text,
                 formingTail: tail,
                 isDraft: line.isDraft,
-                isRefined: line.state == .refined
+                isRefined: line.state == .refined,
+                speaker: pipeline.source == .macAudio
+                    ? self.speaker(during: line.start...line.end).map { self.speakerNumbering.number(for: $0) }
+                    : nil
             )
             rows.append((line.start + offset, row))
         }
@@ -555,6 +673,8 @@ private final class CaptionPipeline {
     let draft = LiveCaptionDraftEngine()
     /// Closed while the user dictates: the microphone then captures silence.
     let gate = CaptureGate()
+    /// Also hands captured audio to the speaker tracker, when one is attached.
+    let feed = SampleFeed()
     var handledPauseStart: Double = -.infinity
     var lastForcedFinalize: Double = -.infinity
     private var capture: CaptionAudioSource?
@@ -571,10 +691,12 @@ private final class CaptionPipeline {
         let timeline = self.timeline
         let draft = self.draft
         let gate = self.gate
+        let feed = self.feed
         let capture = make { samples in
             let audio = gate.isOpen ? samples : [Float](repeating: 0, count: samples.count)
             timeline.append(audio)
             draft.append(audio)
+            feed.send(audio)
         }
         try capture.start()
         self.capture = capture
@@ -590,6 +712,21 @@ private final class CaptionPipeline {
     /// times onto the session clock.
     func offset(from sessionStart: Date) -> Double {
         self.timeline.startedAt.map { $0.timeIntervalSince(sessionStart) } ?? 0
+    }
+}
+
+/// A replaceable receiver for captured audio, called on the capture queue.
+nonisolated final class SampleFeed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sink: (@Sendable ([Float]) -> Void)?
+
+    func attach(_ sink: (@Sendable ([Float]) -> Void)?) {
+        self.lock.withLock { self.sink = sink }
+    }
+
+    func send(_ samples: [Float]) {
+        let sink = self.lock.withLock { self.sink }
+        sink?(samples)
     }
 }
 

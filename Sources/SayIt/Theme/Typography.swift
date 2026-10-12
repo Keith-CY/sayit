@@ -62,5 +62,7 @@ enum AppFont {
         static let detail = Font.system(size: 12, weight: .regular)
         /// Source mark (Mac audio or microphone) at the start of a caption line.
         static let sourceIcon = Font.system(size: 13, weight: .regular)
+        /// Speaker name before the first line of a turn.
+        static let speaker = Font.system(size: 12, weight: .semibold)
     }
 }

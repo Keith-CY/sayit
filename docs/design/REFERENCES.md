@@ -57,7 +57,8 @@ comparison only; we do not copy layouts, copy or assets.
   re-transcribed by Qwen), and show which words may still change instead of silently
   rewriting text the viewer is reading. Apple switches between Computer Audio and
   Microphone; SayIt captions both at once, marks whose words each line is, and never
-  captions the speakers' sound twice.
+  captions the speakers' sound twice. Apple's guide doesn't mention speaker labels;
+  SayIt names each turn (“Speaker 1”, “Speaker 2”).
 
 ## Motion (unverified — shot pages blocked automated fetch)
 

@@ -29,6 +29,7 @@ final class SettingsStore: ObservableObject {
     private enum Keys {
         static let enableAIProcessing = "EnableAIProcessing"
         static let liveCaptionsIncludeMicrophone = "LiveCaptionsIncludeMicrophone"
+        static let liveCaptionsLabelSpeakers = "LiveCaptionsLabelSpeakers"
         static let availableAIModels = "AvailableAIModels"
         static let availableModelsByProvider = "AvailableModelsByProvider"
         static let selectedAIModel = "SelectedAIModel"
@@ -736,6 +737,16 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.liveCaptionsIncludeMicrophone)
+        }
+    }
+
+    /// Live Captions label who is speaking in Mac audio (off by default: the speaker model
+    /// is a separate download of about 250 MB).
+    var liveCaptionsLabelSpeakers: Bool {
+        get { self.defaults.bool(forKey: Keys.liveCaptionsLabelSpeakers) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.liveCaptionsLabelSpeakers)
         }
     }
 

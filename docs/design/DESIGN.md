@@ -155,7 +155,7 @@ House style for every user-facing string. Copy errors are release blockers.
   shortcut (“shortcut” in short labels; never “hotkey”) · Settings (never
   “Preferences”) · File Transcription · Home · Live Captions (the feature, always
   plural) · Mac Audio and Microphone (the caption sources) · “You” (VoiceOver name for
-  the user's own caption lines).
+  the user's own caption lines) · Speakers / “Speaker 1” (people heard in Mac audio).
 - **Capitalization.** Title Case for buttons, menu items, page/section titles, sidebar
   items. Sentence case for toggle/checkbox labels, descriptions, help and messages.
 - **Punctuation.** Ellipsis “…” (one character) for in-progress states and items that
@@ -237,6 +237,14 @@ replaced, so the line the viewer settles on is the accurate one.
   tooltip says how to allow it). While it is on, every line starts with its source
   glyph (`speaker.wave.2` or `mic`, VoiceOver “Mac Audio” / “You”), and lines from both
   sources interleave in the order they were spoken.
+- **Speakers.** A “Speakers” chip labels who is talking in Mac audio (on-device
+  streaming diarization, up to four voices). Off by default and remembered, because
+  the speaker model is a separate ~250 MB download; while it downloads and loads the
+  chip's glyph pulses (“Getting speaker labels ready…”). Speakers are numbered in the
+  order they first speak, and only once a second voice is heard. The name appears
+  before the first line of each turn (`AppFont.LiveCaption.speaker`, tertiary), not on
+  lines that continue the same speaker, so the transcript reads like a script. A line
+  also ends where the speaker changes, so each line, and each Qwen pass, has one voice.
 - **No double captions.** Without headphones the microphone also hears the speakers. A
   microphone line is shown only once it's clear it isn't that sound: right away if the
   Mac was quiet while it was spoken, dropped if the Mac played the same words around
@@ -260,8 +268,8 @@ replaced, so the line the viewer settles on is the accurate one.
 - **Accessibility.** The caption area is one element labeled “Live Captions” with the
   updates-frequently trait; the close button is an `IconButton` (“Turn Off Live
   Captions”).
-- **Not yet.** Resizing, caption appearance settings and labels for different speakers
-  within Mac audio. Apple's Live Captions has the first two (see `REFERENCES.md`).
+- **Not yet.** Resizing, caption appearance settings (Apple's Live Captions has both,
+  see `REFERENCES.md`) and renaming speakers.
 
 Evidence: `LiveCaptionSnapshotTests` renders every state. Motion and the live pipeline
 need a screen recording; until then the motion verdict is “待验证”.

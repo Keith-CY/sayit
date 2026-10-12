@@ -128,6 +128,7 @@ struct LiveCaptionPanelView: View {
     var body: some View {
         LiveCaptionContent(
             state: self.service.viewState,
+            onToggleSpeakers: { self.service.setSpeakerLabelsEnabled(self.service.viewState.speakers == .off) },
             onToggleMicrophone: { self.service.setMicrophoneEnabled(self.service.viewState.microphone == .off) },
             onClose: { self.service.stop() }
         )
@@ -138,6 +139,7 @@ struct LiveCaptionPanelView: View {
 struct LiveCaptionContent: View {
     @Environment(\.theme) private var theme
     let state: LiveCaptionViewState
+    var onToggleSpeakers: () -> Void = {}
     var onToggleMicrophone: () -> Void = {}
     var onClose: () -> Void = {}
 
@@ -181,6 +183,7 @@ struct LiveCaptionContent: View {
                 .labelStyle(.titleAndIcon)
             Spacer(minLength: Space.sm)
             if self.state.phase == .listening {
+                SpeakerToggle(state: self.state.speakers, action: self.onToggleSpeakers)
                 MicrophoneToggle(state: self.state.microphone, action: self.onToggleMicrophone)
             }
             IconButton("Turn Off Live Captions", systemName: "xmark", size: 22, action: self.onClose)
@@ -234,6 +237,7 @@ struct LiveCaptionContent: View {
         let rows = Array(self.state.rows.suffix(LiveCaptionLayout.visibleLines))
         // Mark where each line came from once the microphone is in the mix.
         let showsSources = self.state.microphone == .on || rows.contains { $0.source == .microphone }
+        let speakerLabels = LiveCaptionViewState.turnLabels(for: rows)
 
         return VStack(alignment: .leading, spacing: Space.xs) {
             ForEach(rows) { row in
@@ -245,7 +249,7 @@ struct LiveCaptionContent: View {
                             .frame(width: Space.lg)
                             .accessibilityLabel(row.source == .microphone ? "You" : "Mac Audio")
                     }
-                    self.captionText(row)
+                    self.captionText(row, speakerLabel: speakerLabels[row.id])
                 }
                 .motionTransition()
             }
@@ -271,10 +275,14 @@ struct LiveCaptionContent: View {
     }
 
     /// Settled words in full ink; words that may still change (Apple's draft, awaiting
-    /// Qwen) one step quieter; the forming tail quieter still.
-    private func captionText(_ row: LiveCaptionViewState.Row) -> some View {
+    /// Qwen) one step quieter; the forming tail quieter still. A turn starts with the
+    /// speaker's name.
+    private func captionText(_ row: LiveCaptionViewState.Row, speakerLabel: String?) -> some View {
         let ink = row.isDraft ? self.theme.overlay.secondaryText : self.theme.overlay.primaryText
-        return (Text(row.text).foregroundStyle(ink) + Text(row.formingTail).foregroundStyle(self.theme.overlay.tertiaryText))
+        let label = speakerLabel.map {
+            Text("\($0)\u{2003}").font(AppFont.LiveCaption.speaker).foregroundStyle(self.theme.overlay.tertiaryText)
+        } ?? Text("")
+        return (label + Text(row.text).foregroundStyle(ink) + Text(row.formingTail).foregroundStyle(self.theme.overlay.tertiaryText))
             .contentTransition(.opacity)
             .motion(Motion.state, value: row.text)
             .motion(Motion.state, value: row.isDraft)
@@ -334,6 +342,45 @@ struct LiveCaptionContent: View {
         }
         .frame(maxHeight: .infinity, alignment: .center)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Turns speaker labels on and off. Off by default: the speaker model is a separate
+/// download of about 250 MB.
+private struct SpeakerToggle: View {
+    let state: LiveCaptionViewState.Speakers
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: self.action) {
+            Label {
+                Text("Speakers")
+            } icon: {
+                Image(systemName: self.glyph)
+                    .ambientPulse(isActive: self.state == .preparing)
+            }
+            .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(LiveCaptionChipStyle(isOn: self.state == .on || self.state == .preparing, isWarning: self.state == .unavailable))
+        .help(self.help)
+        .accessibilityValue(self.state == .off ? "Off" : "On")
+    }
+
+    private var glyph: String {
+        switch self.state {
+        case .off: return "person.2.slash"
+        case .preparing, .on: return "person.2"
+        case .unavailable: return "exclamationmark.triangle"
+        }
+    }
+
+    private var help: String {
+        switch self.state {
+        case .off: return "Label who is speaking. The first time, SayIt downloads a 250 MB speaker model."
+        case .preparing: return "Getting speaker labels ready…"
+        case .on: return "Stop labeling speakers"
+        case .unavailable: return "The speaker model couldn’t be loaded. Check your internet connection, then turn it on again."
+        }
     }
 }
 
