@@ -46,6 +46,20 @@ comparison only; we do not copy layouts, copy or assets.
 - **SayIt must:** keep the HUD minimal like Apple's, while adding the processing state
   and the transcript preview Apple lacks.
 
+**Apple Live Captions (macOS)** — https://support.apple.com/guide/mac-help/use-live-captions-mchldd11f4fd/mac
+- Captions any app's audio on device; a floating window that can be moved and resized,
+  hides itself when no audio is detected (“Keep Onscreen” overrides), pauses from the
+  window or the menu bar, and switches between Computer Audio and Microphone.
+- Settings for font family, size and colors; “Restore Default Position” in the menu.
+- Observed from Apple's documentation, not hands-on: the guide doesn't say how it
+  handles mixed Chinese and English, or whether words change after they appear.
+- **SayIt must:** caption mixed Chinese–English speech accurately (each line is
+  re-transcribed by Qwen), and show which words may still change instead of silently
+  rewriting text the viewer is reading. Apple switches between Computer Audio and
+  Microphone; SayIt captions both at once, marks whose words each line is, and never
+  captions the speakers' sound twice. Apple's guide doesn't mention speaker labels;
+  SayIt names each turn (“Speaker 1”, “Speaker 2”).
+
 ## Motion (unverified — shot pages blocked automated fetch)
 
 - https://dribbble.com/shots/23223907-Voice-Notification-Dynamic-Island-Style-Animation

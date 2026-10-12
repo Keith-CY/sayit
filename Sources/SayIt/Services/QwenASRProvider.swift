@@ -33,6 +33,20 @@ final class QwenASRProvider: TranscriptionProvider {
         try await self.runtime.load(from: self.store.directory)
         try Task.checkCancellation()
         self.isReady = true
+        // Compile kernels now so the first dictation after loading is not the slow one.
+        await self.warmUp()
+        #endif
+    }
+
+    func warmUp() async {
+        guard self.isReady else { return }
+        #if arch(arm64)
+        let started = Date()
+        await self.runtime.warmUp()
+        DebugLogger.shared.debug(
+            "QwenASRProvider: warm-up finished in \(String(format: "%.2f", Date().timeIntervalSince(started)))s",
+            source: "QwenASRProvider"
+        )
         #endif
     }
 
@@ -82,19 +96,46 @@ final class QwenASRProvider: TranscriptionProvider {
 /// Keeps the mutable MLX model off the main thread and serializes inference.
 private actor QwenInferenceRuntime {
     private var model: Qwen3ASRModel?
+    /// The load in progress, so callers that overlap (dictation and Live Captions) share
+    /// one copy of the weights instead of each loading 2.5 GB.
+    private var loading: Task<Void, Error>?
 
     func load(from directory: URL) async throws {
         guard self.model == nil else { return }
-        // Bound reusable GPU buffers so switching away can return memory to the system.
-        Memory.cacheLimit = 64 * 1024 * 1024
-        let loaded = try await Qwen3ASRModel.fromModelDirectory(directory)
+        let task: Task<Void, Error>
+        if let loading = self.loading {
+            task = loading
+        } else {
+            // Bound reusable GPU buffers so switching away can return memory to the system.
+            Memory.cacheLimit = 64 * 1024 * 1024
+            task = Task { try await self.loadModel(from: directory) }
+            self.loading = task
+        }
+        defer { if self.loading == task { self.loading = nil } }
+        try await task.value
         try Task.checkCancellation()
+    }
+
+    private func loadModel(from directory: URL) async throws {
+        let loaded = try await Qwen3ASRModel.fromModelDirectory(directory)
         self.model = loaded
     }
 
     func unload() {
         self.model = nil
         Memory.clearCache()
+    }
+
+    /// Decoding one token runs every layer, so weights macOS paged out while idle are read back
+    /// before real audio arrives instead of during the final transcription.
+    func warmUp() {
+        guard let model = self.model else { return }
+        _ = model.generate(
+            audio: MLXArray([Float](repeating: 0, count: 16000)),
+            maxTokens: 1,
+            temperature: 0,
+            chunkDuration: 30
+        )
     }
 
     func transcribe(_ samples: [Float], language: String?) throws -> String {

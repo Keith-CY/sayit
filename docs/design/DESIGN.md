@@ -19,6 +19,9 @@ Two surfaces follow from that:
 - **The main window** is used occasionally. It must make setup obvious, keep
   settings findable, and show what SayIt has written.
 
+**Live Captions** (macOS 26) is a third, opt-in surface: captions for audio the Mac
+plays — videos, calls, talks — in the same mixed Chinese–English the user speaks.
+
 ## 2. Core concept: voice becomes writing
 
 Every touchpoint shows the same transformation — sound turning into words.
@@ -93,6 +96,9 @@ Sidebar, in sections (Title Case, outline SF Symbols at regular weight):
 - **Settings** — General, Voice Engine, Dictionary, AI Enhancement
 - **Help & Feedback**
 
+Live Captions are turned on and off from the menu bar (“Live Captions”, a checkmark
+item) and from the panel's close button; they have no sidebar page.
+
 Selecting a sidebar item never changes global behaviour (shortcuts, overlay mode).
 
 ## 7. Motion
@@ -147,7 +153,9 @@ House style for every user-facing string. Copy errors are release blockers.
 - **Glossary.** Dictate Mode · Edit Mode · Command Mode · AI Enhancement (the feature;
   history badge “Enhanced”) · Voice Engine · speech model · Dictionary · keyboard
   shortcut (“shortcut” in short labels; never “hotkey”) · Settings (never
-  “Preferences”) · File Transcription · Home.
+  “Preferences”) · File Transcription · Home · Live Captions (the feature, always
+  plural) · Mac Audio and Microphone (the caption sources) · “You” (VoiceOver name for
+  the user's own caption lines) · Speakers / “Speaker 1” (people heard in Mac audio).
 - **Capitalization.** Title Case for buttons, menu items, page/section titles, sidebar
   items. Sentence case for toggle/checkbox labels, descriptions, help and messages.
 - **Punctuation.** Ellipsis “…” (one character) for in-progress states and items that
@@ -205,3 +213,63 @@ Observation date 2026-10-12. Wispr Flow, Superwhisper, VoiceInk, Aqua Voice and 
   -only-testing:SayItDictationIntegrationTests` (see `SnapshotRenderer.swift`).
 - Motion: requires screen recording of the overlay phases; until recorded, the motion
   verdict stays “待验证”.
+
+## 15. Live Captions
+
+A floating panel that captions what the Mac is playing. Words appear as Apple's
+on-device speech recognition hears them; each line is then re-transcribed by Qwen and
+replaced, so the line the viewer settles on is the accurate one.
+
+- **Concept.** The same “voice becomes writing” idea, shown over time: forming words
+  are faint (`overlay.tertiaryText`), words that may still change are one step quieter
+  than final (`secondaryText`), and settled lines are full ink (`primaryText`). The
+  viewer can always tell which text is final; nothing changes without a visible cue.
+- **Surface.** Always dark, like the recording overlay (`sayItOverlayTheme()`), since it
+  sits over video. 620pt wide, `Radius.xl`, hairline edge, diffuse shadow. Header in
+  `AppFont.Overlay.label`: “Live Captions · Mac Audio” with glyphs, close button
+  trailing. Captions in `AppFont.LiveCaption.text` (New York 19pt): three lines, bottom
+  aligned; older lines scroll up and fade out under a top gradient.
+- **Microphone.** A “Microphone” chip in the header adds the user's own speech as a
+  second source; off by default and remembered, because an open microphone puts
+  AirPods in call mode and lowers playback quality. It uses dictation's input device.
+  Glyph + fill carry its state (`mic.slash` off, `mic` on with a raised fill,
+  `exclamationmark.triangle` in warning color when SayIt can't use the microphone; the
+  tooltip says how to allow it). While it is on, every line starts with its source
+  glyph (`speaker.wave.2` or `mic`, VoiceOver “Mac Audio” / “You”), and lines from both
+  sources interleave in the order they were spoken.
+- **Speakers.** A “Speakers” chip labels who is talking in Mac audio (on-device
+  streaming diarization, up to four voices). Off by default and remembered, because
+  the speaker model is a separate ~250 MB download; while it downloads and loads the
+  chip's glyph pulses (“Getting speaker labels ready…”). Speakers are numbered in the
+  order they first speak, and only once a second voice is heard. The name appears
+  before the first line of each turn (`AppFont.LiveCaption.speaker`, tertiary), not on
+  lines that continue the same speaker, so the transcript reads like a script. A line
+  also ends where the speaker changes, so each line, and each Qwen pass, has one voice.
+- **No double captions.** Without headphones the microphone also hears the speakers. A
+  microphone line is shown only once it's clear it isn't that sound: right away if the
+  Mac was quiet while it was spoken, dropped if the Mac played the same words around
+  then, otherwise after at most 3 s. While the Mac is playing, the microphone's forming
+  words stay hidden for the same reason.
+- **Placement.** Centered above where the bottom recording overlay appears, so the two
+  never overlap by default. Drag anywhere outside the controls to move it; the position
+  is remembered.
+- **States.** Preparing (“Getting Live Captions ready…”, which covers Apple's one-time
+  speech model download); listening with nothing yet (“Listening to your Mac’s
+  audio…”); captions; nothing but silence for 8 s (“Nothing has played yet”, with
+  Open Privacy Settings, since a denied permission sounds like silence); can't capture
+  audio; speech model unavailable. Each failure says what to do next.
+- **Motion.** The panel rises in like the overlay (`Motion.enter`, 8pt) and fades out
+  (`Motion.exit`). New lines use `motionTransition()`; replaced text cross-fades
+  (`contentTransition(.opacity)` with `Motion.state`); ink changes animate with
+  `Motion.state`. Reduce Motion turns all of it into the 0.16s fade.
+- **Dictation first.** While the user dictates, captions keep drafting but Qwen
+  refinement waits, so the dictation result is never queued behind a caption line, and
+  the microphone source hears silence: words said to SayIt aren't captions.
+- **Accessibility.** The caption area is one element labeled “Live Captions” with the
+  updates-frequently trait; the close button is an `IconButton` (“Turn Off Live
+  Captions”).
+- **Not yet.** Resizing, caption appearance settings (Apple's Live Captions has both,
+  see `REFERENCES.md`) and renaming speakers.
+
+Evidence: `LiveCaptionSnapshotTests` renders every state. Motion and the live pipeline
+need a screen recording; until then the motion verdict is “待验证”.

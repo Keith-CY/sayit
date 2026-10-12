@@ -104,6 +104,8 @@ private actor ModelDownloadRegistry {
 final class ASRService: ObservableObject {
     @Published var isRunning: Bool = false
     @Published private(set) var isStarting: Bool = false
+    /// True from releasing the shortcut until the final transcript is ready.
+    @Published private(set) var isTranscribingFinal: Bool = false
     @Published var finalText: String = ""
     @Published var partialTranscription: String = ""
     @Published var wordBoostStatusText: String = "Word boost: off"
@@ -224,6 +226,36 @@ final class ASRService: ObservableObject {
         let provider = QwenASRProvider()
         self.qwenProvider = provider
         return provider
+    }
+
+    // MARK: - Live Captions
+
+    /// True while the user is dictating; Live Captions yield the model until it's false.
+    var isDictationActive: Bool {
+        self.isStarting || self.isRunning || self.isTranscribingFinal
+    }
+
+    /// The Qwen provider dictation uses, loaded for Live Captions so the model is in
+    /// memory at most once. Returns nil when Qwen isn't downloaded; never downloads.
+    func qwenForLiveCaptions() async -> QwenASRProvider? {
+        guard CPUArchitecture.isAppleSilicon else { return nil }
+        let provider = self.getQwenProvider()
+        guard provider.modelsExistOnDisk() else { return nil }
+        if !provider.isReady {
+            do {
+                try await provider.prepare(progressHandler: nil)
+            } catch {
+                DebugLogger.shared.error("Live Captions: couldn't load Qwen: \(error)", source: "ASRService")
+                return nil
+            }
+        }
+        return provider.isReady ? provider : nil
+    }
+
+    /// Frees Qwen's memory after Live Captions stop, unless dictation uses it.
+    func releaseQwenAfterLiveCaptions() {
+        guard self.activeSpeechModel != .qwen3Asr else { return }
+        self.qwenProvider = nil
     }
 
     private func getWhisperProvider() -> WhisperProvider {
@@ -710,6 +742,9 @@ final class ASRService: ObservableObject {
             self.showMicPermissionError(for: status)
             return
         }
+        // Warm up while the user speaks so weights paged out during idle don't delay the result.
+        let provider = self.transcriptionProvider
+        Task { await provider.warmUp() }
         // Reset media pause state for this session
         self.didPauseMediaForThisSession = false
 
@@ -839,7 +874,12 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.warning("⚠️ STOP() - not running, returning empty string", source: "ASRService")
             return ""
         }
-        defer { self.applyPendingParakeetVocabularyReloadIfNeeded() }
+        // Set before isRunning drops so Live Captions never sees a gap and takes the model.
+        self.isTranscribingFinal = true
+        defer {
+            self.isTranscribingFinal = false
+            self.applyPendingParakeetVocabularyReloadIfNeeded()
+        }
 
         // Capture media pause state before we reset it, for resuming at the end
         let shouldResumeMedia = SettingsStore.shared.pauseMediaDuringTranscription && self.didPauseMediaForThisSession
