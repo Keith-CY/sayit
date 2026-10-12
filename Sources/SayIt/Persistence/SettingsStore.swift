@@ -30,6 +30,9 @@ final class SettingsStore: ObservableObject {
         static let enableAIProcessing = "EnableAIProcessing"
         static let liveCaptionsIncludeMicrophone = "LiveCaptionsIncludeMicrophone"
         static let liveCaptionsLabelSpeakers = "LiveCaptionsLabelSpeakers"
+        static let liveCaptionsLanguage = "LiveCaptionsLanguage"
+        static let liveCaptionsTranslate = "LiveCaptionsTranslate"
+        static let liveCaptionsTranslationTarget = "LiveCaptionsTranslationTarget"
         static let availableAIModels = "AvailableAIModels"
         static let availableModelsByProvider = "AvailableModelsByProvider"
         static let selectedAIModel = "SelectedAIModel"
@@ -747,6 +750,40 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.liveCaptionsLabelSpeakers)
+        }
+    }
+
+    /// The language Live Captions listen for, separate from dictation (people dictate in
+    /// one language and watch videos in another). Starts as the dictation language.
+    var liveCaptionsLanguage: LiveCaptionLanguage {
+        get {
+            if let saved = self.defaults.string(forKey: Keys.liveCaptionsLanguage).flatMap(LiveCaptionLanguage.init(rawValue:)),
+               saved.speechMode != nil {
+                return saved
+            }
+            return .initial(dictation: self.speechLanguageMode, preferredLanguages: Locale.preferredLanguages)
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.liveCaptionsLanguage)
+        }
+    }
+
+    /// Live Captions show a translation next to each line (off by default).
+    var liveCaptionsTranslate: Bool {
+        get { self.defaults.bool(forKey: Keys.liveCaptionsTranslate) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.liveCaptionsTranslate)
+        }
+    }
+
+    /// The language Live Captions are translated into; nil until one is chosen.
+    var liveCaptionsTranslationTarget: LiveCaptionLanguage? {
+        get { self.defaults.string(forKey: Keys.liveCaptionsTranslationTarget).flatMap(LiveCaptionLanguage.init(rawValue:)) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue?.rawValue, forKey: Keys.liveCaptionsTranslationTarget)
         }
     }
 

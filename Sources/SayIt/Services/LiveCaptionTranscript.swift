@@ -48,8 +48,8 @@ struct LiveCaptionTranscript: Equatable {
         /// Words Apple hasn't committed for this long are committed at a quiet point.
         /// Measured from a coarse start (it can include a pause), so it's above `maxLineSeconds`.
         var maxUncommittedSeconds: Double = 10
-        /// Lines kept for display; older finished lines are dropped.
-        var maxLines: Int = 30
+        /// Lines kept for display (scrollback); older finished lines are dropped.
+        var maxLines: Int = 200
     }
 
     let policy: Policy
@@ -88,12 +88,13 @@ struct LiveCaptionTranscript: Equatable {
         if let index = self.openIndex {
             self.lines[index].text = Self.join(self.lines[index].text, phrase)
             self.lines[index].end = max(self.lines[index].end, end)
-            if self.lines[index].end - self.lines[index].start >= self.policy.maxLineSeconds {
-                closed.append(self.close(index))
-            }
         } else {
             self.lines.append(Line(id: self.nextID, text: phrase, start: start, end: end, state: .open))
             self.nextID += 1
+        }
+        // A new line counts too: after unbroken speech Apple commits ~10 s in one phrase.
+        if let index = self.openIndex, self.lines[index].end - self.lines[index].start >= self.policy.maxLineSeconds {
+            closed.append(self.close(index))
         }
         if let index = self.openIndex, let ended = self.speechEndedAt, self.lines[index].end <= ended + Self.timingTolerance {
             closed.append(self.close(index))
@@ -126,6 +127,12 @@ struct LiveCaptionTranscript: Equatable {
     /// True when Apple has words that a heard pause should commit.
     var hasUncommittedWords: Bool {
         !self.volatileText.isEmpty || self.openIndex != nil
+    }
+
+    /// Forgets the forming words, e.g. when the recognizer that reported them stops.
+    mutating func discardVolatile() {
+        self.volatileText = ""
+        self.volatileStart = nil
     }
 
     /// Updates the forming words. Returns the open line's id if these words start after a

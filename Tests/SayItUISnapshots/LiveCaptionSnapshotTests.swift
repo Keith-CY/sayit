@@ -8,7 +8,10 @@ import XCTest
 /// fixtures so no audio, permission or model is involved.
 @MainActor
 final class LiveCaptionSnapshotTests: XCTestCase {
-    private static let size = CGSize(width: 660, height: 200)
+    private static let size = LiveCaptionLayout.defaultSize
+    private static let translatingSize = CGSize(width: LiveCaptionLayout.translatingWidth, height: LiveCaptionLayout.defaultSize.height)
+    private static let narrowSize = CGSize(width: LiveCaptionLayout.minimumSize.width, height: LiveCaptionLayout.defaultSize.height)
+    private static let tallSize = CGSize(width: LiveCaptionLayout.defaultSize.width, height: 360)
 
     private static func row(
         _ id: String,
@@ -16,7 +19,8 @@ final class LiveCaptionSnapshotTests: XCTestCase {
         from source: LiveCaptionSource = .macAudio,
         speaker: Int? = nil,
         draft: Bool = false,
-        forming: String = ""
+        forming: String = "",
+        translation: String? = nil
     ) -> LiveCaptionViewState.Row {
         LiveCaptionViewState.Row(
             id: id,
@@ -25,9 +29,17 @@ final class LiveCaptionSnapshotTests: XCTestCase {
             formingTail: forming,
             isDraft: draft,
             isRefined: !draft,
-            speaker: speaker
+            speaker: speaker,
+            translation: translation
         )
     }
+
+    private static let japaneseConversation: [LiveCaptionViewState.Row] = [
+        row("a", "今日はリリースの話をしましょう。", speaker: 1, translation: "今天我们来聊聊发布的事。"),
+        row("b", "テストは全部通りましたか？", speaker: 2, translation: "测试全部通过了吗？"),
+        row("c", "はい、昨日の夜に全部終わりました。", speaker: 1, translation: "是的，昨天晚上全部完成了。"),
+        row("d", "じゃあ、来週の月曜日に出しましょう", speaker: 2, draft: true, forming: "か"),
+    ]
 
     private static let states: [(String, LiveCaptionViewState)] = [
         ("1-preparing", LiveCaptionViewState(phase: .preparing)),
@@ -97,6 +109,71 @@ final class LiveCaptionSnapshotTests: XCTestCase {
             rows: [row("a", "We shipped the new onboarding last week.")],
             speakers: .unavailable
         )),
+        ("19-changing-language", LiveCaptionViewState(
+            phase: .listening,
+            rows: [row("a", "We shipped the new onboarding last week.")],
+            language: .japanese,
+            isChangingLanguage: true
+        )),
+        ("20-transcript-not-saved", LiveCaptionViewState(
+            phase: .listening,
+            rows: [row("a", "We shipped the new onboarding last week.")],
+            transcriptSaveFailed: true
+        )),
+    ]
+
+    /// States that need a different panel size: translation (wide), a narrow panel, and a
+    /// tall one reading back.
+    private static let sizedStates: [(String, CGSize, LiveCaptionViewState)] = [
+        ("15-translation", translatingSize, LiveCaptionViewState(
+            phase: .listening,
+            rows: japaneseConversation,
+            speakers: .on,
+            language: .japanese,
+            translation: .init(target: .chinese, status: .ready)
+        )),
+        ("16-translation-with-microphone", translatingSize, LiveCaptionViewState(
+            phase: .listening,
+            rows: [
+                row("a", "テストは全部通りましたか？", translation: "测试全部通过了吗？"),
+                row("b", "全部通りました。", from: .microphone, translation: "全部通过了。"),
+                row("c", "じゃあ、来週出しましょう。", translation: nil),
+                row("d", "", from: .microphone, draft: true, forming: "そうしましょう"),
+            ],
+            microphone: .on,
+            language: .japanese,
+            translation: .init(target: .chinese, status: .ready)
+        )),
+        ("17-translation-needs-download", size, LiveCaptionViewState(
+            phase: .listening,
+            rows: [row("a", "今日はリリースの話をしましょう。")],
+            language: .japanese,
+            translation: .init(target: .chinese, status: .needsDownload)
+        )),
+        ("18-translation-unsupported", size, LiveCaptionViewState(
+            phase: .listening,
+            rows: [row("a", "Vamos falar sobre o lançamento.")],
+            language: .portuguese,
+            translation: .init(target: .korean, status: .unsupported)
+        )),
+        ("21-narrow", narrowSize, LiveCaptionViewState(
+            phase: .listening,
+            rows: [
+                row("a", "So when does the migration guide go out?"),
+                row("b", "下周一发，我今天先把初稿写好。", from: .microphone),
+            ],
+            microphone: .on,
+            speakers: .on,
+            language: .english,
+            translation: .init(target: .chinese, status: .preparing)
+        )),
+        ("22-tall-scrollback", tallSize, LiveCaptionViewState(
+            phase: .listening,
+            rows: (1...14).map { index in
+                row("\(index)", "Line \(index): the panel keeps every line, so you can scroll back to read what was said.")
+            },
+            language: .english
+        )),
     ]
 
     override func setUp() async throws {
@@ -107,8 +184,10 @@ final class LiveCaptionSnapshotTests: XCTestCase {
     }
 
     func testLiveCaptionStates() throws {
-        for (name, state) in Self.states {
-            try SnapshotRenderer.snapshot("live-captions-\(name)", size: Self.size, overlay: true) {
+        guard #available(macOS 26.0, *) else { throw XCTSkip("Live Captions need macOS 26") }
+        let all = Self.states.map { ($0.0, Self.size, $0.1) } + Self.sizedStates
+        for (name, size, state) in all {
+            try SnapshotRenderer.snapshot("live-captions-\(name)", size: size, overlay: true) {
                 LiveCaptionContent(state: state)
             }
         }

@@ -380,9 +380,13 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
         }
     }
 
-    /// The first locale SpeechAnalyzer supports from the user's speech language setting.
-    static func resolveSupportedLocale(preferDownload: Bool = true) async -> Locale {
-        let mode = SettingsStore.shared.speechLanguageMode
+    /// The first locale SpeechAnalyzer supports for a speech language (by default, the
+    /// dictation language setting).
+    static func resolveSupportedLocale(
+        for language: SettingsStore.SpeechLanguageMode? = nil,
+        preferDownload: Bool = true
+    ) async -> Locale {
+        let mode = language ?? SettingsStore.shared.speechLanguageMode
         let candidateLocales: [Locale]
         if mode.isAutomatic {
             candidateLocales = Self.localeCandidates(for: Locale.current, in: mode)

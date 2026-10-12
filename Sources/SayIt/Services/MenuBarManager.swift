@@ -372,6 +372,14 @@ final class MenuBarManager: ObservableObject {
             captionsItem.target = self
             self.liveCaptionsMenuItem = captionsItem
             menu.addItem(captionsItem)
+
+            let transcriptsItem = NSMenuItem(
+                title: "Show Live Captions Transcripts",
+                action: #selector(self.showLiveCaptionTranscripts),
+                keyEquivalent: ""
+            )
+            transcriptsItem.target = self
+            menu.addItem(transcriptsItem)
         }
 
         menu.addItem(.separator())
@@ -461,6 +469,10 @@ final class MenuBarManager: ObservableObject {
 
     @objc private func toggleLiveCaptions() {
         LiveCaptionService.shared.toggle()
+    }
+
+    @objc private func showLiveCaptionTranscripts() {
+        LiveCaptionService.shared.showTranscripts()
     }
 
     @objc private func openMainWindow() {

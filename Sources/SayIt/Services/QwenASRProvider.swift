@@ -61,12 +61,17 @@ final class QwenASRProvider: TranscriptionProvider {
     }
 
     func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        let mode = await MainActor.run { SettingsStore.shared.speechLanguageMode }
+        return try await self.transcribe(samples, in: mode)
+    }
+
+    /// Transcribes in a given language instead of the dictation language (Live Captions).
+    func transcribe(_ samples: [Float], in mode: SettingsStore.SpeechLanguageMode) async throws -> ASRTranscriptionResult {
         guard self.isReady else { throw QwenModelError.notReady }
         guard samples.allSatisfy(\.isFinite) else { throw QwenModelError.invalidAudio }
         guard !samples.isEmpty, samples.contains(where: { $0 != 0 }) else {
             return ASRTranscriptionResult(text: "")
         }
-        let mode = await MainActor.run { SettingsStore.shared.speechLanguageMode }
         #if arch(arm64)
         let text = try await self.runtime.transcribe(samples, language: Self.language(for: mode))
         return ASRTranscriptionResult(text: text)

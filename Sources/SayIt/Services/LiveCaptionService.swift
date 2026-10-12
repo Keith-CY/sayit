@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Combine
 import CoreMedia
@@ -48,6 +49,23 @@ struct LiveCaptionViewState: Equatable {
         var isRefined = false
         /// Who is speaking in Mac audio (1, 2, …), once more than one voice was heard.
         var speaker: Int?
+        /// The settled line in the translation language, when translating.
+        var translation: String?
+    }
+
+    struct Translation: Equatable {
+        enum Status: Equatable {
+            /// Checking or downloading the languages.
+            case preparing
+            case ready
+            /// macOS can translate these languages once they're downloaded.
+            case needsDownload
+            /// macOS can't translate between these languages.
+            case unsupported
+        }
+
+        var target: LiveCaptionLanguage
+        var status: Status
     }
 
     var phase: Phase = .preparing
@@ -57,6 +75,14 @@ struct LiveCaptionViewState: Equatable {
     var speakers: Speakers = .off
     /// Nothing but digital silence has arrived for a while.
     var showsSilenceHint = false
+    /// The language being captioned.
+    var language: LiveCaptionLanguage = .chinese
+    /// Apple's speech model for a newly chosen language is downloading or starting.
+    var isChangingLanguage = false
+    /// nil when translation is off.
+    var translation: Translation?
+    /// The transcript couldn't be saved (for example, no access to Documents).
+    var transcriptSaveFailed = false
 
     /// Speaker names to show before rows that start a turn: a Mac audio row whose speaker
     /// differs from the row above it. Continuing rows aren't labeled again.
@@ -84,6 +110,34 @@ enum LiveCaptionFailure: Equatable {
 /// Makes a capture that delivers 16 kHz mono chunks to the given closure.
 typealias CaptionSourceFactory = (@escaping @Sendable ([Float]) -> Void) -> CaptionAudioSource
 
+/// How a Live Captions session starts. Normally the saved settings; tests set their own
+/// without changing what the person chose.
+struct LiveCaptionOptions {
+    var language: LiveCaptionLanguage
+    /// nil: no translation.
+    var translationTarget: LiveCaptionLanguage?
+    var includeMicrophone: Bool
+    var labelSpeakers: Bool
+    /// Replaces the real microphone (tests).
+    var makeMicrophone: CaptionSourceFactory?
+    /// Replaces the system audio tap (tests feed rendered speech without playing it).
+    var makeMacAudio: CaptionSourceFactory?
+    var transcriptFolder: URL
+
+    @MainActor
+    static func saved() -> Self {
+        let settings = SettingsStore.shared
+        let language = settings.liveCaptionsLanguage
+        return Self(
+            language: language,
+            translationTarget: settings.liveCaptionsTranslate ? LiveCaptionService.translationTarget(for: language) : nil,
+            includeMicrophone: settings.liveCaptionsIncludeMicrophone,
+            labelSpeakers: settings.liveCaptionsLabelSpeakers,
+            transcriptFolder: LiveCaptionTranscripts.folder
+        )
+    }
+}
+
 // MARK: - Service
 
 /// Turns Live Captions on and off from the menu bar. The work happens in
@@ -109,25 +163,17 @@ final class LiveCaptionService: ObservableObject {
     }
 
     func start() {
-        self.start(includeMicrophone: nil, labelSpeakers: nil, makeMicrophone: nil)
+        self.start(options: .saved())
     }
 
-    /// - Parameters:
-    ///   - includeMicrophone: Overrides the saved setting without changing it (tests).
-    ///   - labelSpeakers: Overrides the saved setting without changing it (tests).
-    ///   - makeMicrophone: Replaces the real microphone (tests).
-    func start(includeMicrophone: Bool?, labelSpeakers: Bool? = nil, makeMicrophone: CaptionSourceFactory?) {
+    func start(options: LiveCaptionOptions) {
         guard Self.isSupported, !self.isOn else { return }
         guard #available(macOS 26.0, *) else { return }
         self.isOn = true
-        self.viewState = LiveCaptionViewState()
-        LiveCaptionPanelController.shared.show()
+        self.viewState = LiveCaptionViewState(language: options.language)
+        LiveCaptionPanelController.shared.show(translating: options.translationTarget != nil)
 
-        let session = LiveCaptionSession(
-            includeMicrophone: includeMicrophone ?? SettingsStore.shared.liveCaptionsIncludeMicrophone,
-            labelSpeakers: labelSpeakers ?? SettingsStore.shared.liveCaptionsLabelSpeakers,
-            makeMicrophone: makeMicrophone
-        ) { [weak self] state in
+        let session = LiveCaptionSession(options: options) { [weak self] state in
             self?.viewState = state
         }
         self.session = session
@@ -151,6 +197,52 @@ final class LiveCaptionService: ObservableObject {
         }
     }
 
+    /// Changes the language being captioned, and remembers it unless `remember` is false
+    /// (tests).
+    func setLanguage(_ language: LiveCaptionLanguage, remember: Bool = true) {
+        guard language.speechMode != nil else { return }
+        if remember { SettingsStore.shared.liveCaptionsLanguage = language }
+        let target = self.viewState.translation.map { _ in self.translationTarget(for: language, remember: remember) }
+        if #available(macOS 26.0, *), let session = self.session as? LiveCaptionSession {
+            Task { await session.setLanguage(language, translationTarget: target) }
+        }
+    }
+
+    /// Translates captions into `target`, or stops translating (nil), and remembers it
+    /// unless `remember` is false (tests).
+    func setTranslationTarget(_ target: LiveCaptionLanguage?, remember: Bool = true) {
+        let wasTranslating = self.viewState.translation != nil
+        if remember {
+            SettingsStore.shared.liveCaptionsTranslate = target != nil
+            if let target { SettingsStore.shared.liveCaptionsTranslationTarget = target }
+        }
+        if target != nil, !wasTranslating {
+            LiveCaptionPanelController.shared.widenForTranslation()
+        }
+        if #available(macOS 26.0, *), let session = self.session as? LiveCaptionSession {
+            session.setTranslationTarget(target)
+        }
+    }
+
+    /// macOS finished downloading translation languages (or the person declined).
+    func translationDownloadEnded() {
+        if #available(macOS 26.0, *), let session = self.session as? LiveCaptionSession {
+            Task { await session.prepareTranslation() }
+        }
+    }
+
+    /// Shows this session's transcript in Finder, or the transcripts folder.
+    func showTranscripts() {
+        if #available(macOS 26.0, *), let session = self.session as? LiveCaptionSession,
+           let url = session.savedTranscriptURL, FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return
+        }
+        let folder = LiveCaptionTranscripts.folder
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(folder)
+    }
+
     func stop() {
         guard self.isOn else { return }
         self.isOn = false
@@ -160,6 +252,26 @@ final class LiveCaptionService: ObservableObject {
         }
         self.session = nil
         DebugLogger.shared.info("Live Captions: off", source: "LiveCaptions")
+    }
+
+    /// The translation language for captions in `language`: the one chosen before, unless
+    /// it's the captions' own language.
+    static func translationTarget(for language: LiveCaptionLanguage) -> LiveCaptionLanguage {
+        if let saved = SettingsStore.shared.liveCaptionsTranslationTarget, !saved.isSameLanguage(as: language) {
+            return saved
+        }
+        return .suggestedTarget(for: language, preferredLanguages: Locale.preferredLanguages)
+    }
+
+    /// While translating, the target to keep after switching to `language`: the current
+    /// one, unless it's now the captions' own language.
+    private func translationTarget(for language: LiveCaptionLanguage, remember: Bool) -> LiveCaptionLanguage {
+        if let current = self.viewState.translation?.target, !current.isSameLanguage(as: language) {
+            return current
+        }
+        let target = LiveCaptionLanguage.suggestedTarget(for: language, preferredLanguages: Locale.preferredLanguages)
+        if remember { SettingsStore.shared.liveCaptionsTranslationTarget = target }
+        return target
     }
 }
 
@@ -185,8 +297,12 @@ private final class LiveCaptionSession {
     private static let newPauseWindow: Double = 2.5
     /// How long only silence may arrive before the panel suggests checking permission.
     private static let silenceHintDelay: Double = 8
-    /// Rows kept for display.
-    private static let maxRows = 12
+    /// Rows kept for display (scrollback).
+    private static let maxRows = 200
+    /// Lines already on screen that get translated when translation turns on.
+    private static let backfilledTranslations = 30
+    /// Saves are batched: the transcript is written at most this often while captioning.
+    private static let saveDelay: Duration = .seconds(2)
     /// Below this level (RMS) the Mac counts as quiet: the microphone can't be hearing it.
     private static let quietLevel: Float = 0.005
     /// How long a microphone line may wait for the Mac's words before it's shown anyway.
@@ -196,6 +312,7 @@ private final class LiveCaptionSession {
 
     private let onUpdate: (LiveCaptionViewState) -> Void
     private let makeMicrophone: CaptionSourceFactory
+    private let makeMacAudio: CaptionSourceFactory
     private let checksMicrophonePermission: Bool
     /// The session clock: lines from different sources are ordered by time since this.
     private let startedAt = Date()
@@ -204,6 +321,24 @@ private final class LiveCaptionSession {
     private var microphoneState: LiveCaptionViewState.Microphone
     private var speakerState: LiveCaptionViewState.Speakers
     private var showsSilenceHint = false
+    private var language: LiveCaptionLanguage
+    private var isChangingLanguage = false
+
+    private var translationTarget: LiveCaptionLanguage?
+    private var translationStatus: LiveCaptionViewState.Translation.Status = .preparing
+    private var translator: LiveCaptionTranslator?
+    /// Settled lines' translations, by row id.
+    private var translations: [String: String] = [:]
+    /// Speakers of settled lines, by row id: fixed once settled, since the tracker only
+    /// remembers recent turns.
+    private var settledSpeakers: [String: Int] = [:]
+
+    private var record: LiveCaptionRecord
+    private let transcriptFolder: URL
+    private var saveTask: Task<Void, Never>?
+    private var transcriptSaveFailed = false
+    /// This session's transcript file, once written.
+    private(set) var savedTranscriptURL: URL?
 
     private var speakerTracker: SpeakerTracker?
     /// Mac audio time at which the tracker started hearing audio (its time zero).
@@ -224,17 +359,18 @@ private final class LiveCaptionSession {
     private var refinesWithQwen = true
     private var isStopped = false
 
-    init(
-        includeMicrophone: Bool,
-        labelSpeakers: Bool,
-        makeMicrophone: CaptionSourceFactory?,
-        onUpdate: @escaping (LiveCaptionViewState) -> Void
-    ) {
+    init(options: LiveCaptionOptions, onUpdate: @escaping (LiveCaptionViewState) -> Void) {
         self.onUpdate = onUpdate
-        self.microphoneState = includeMicrophone ? .on : .off
-        self.speakerState = labelSpeakers ? .preparing : .off
-        self.makeMicrophone = makeMicrophone ?? { MicrophoneCapture(onSamples: $0) }
-        self.checksMicrophonePermission = makeMicrophone == nil
+        self.language = options.language
+        self.translationTarget = options.translationTarget
+        self.transcriptFolder = options.transcriptFolder
+        self.record = LiveCaptionRecord(startedAt: self.startedAt, language: options.language)
+        self.record.translationTarget = options.translationTarget
+        self.microphoneState = options.includeMicrophone ? .on : .off
+        self.speakerState = options.labelSpeakers ? .preparing : .off
+        self.makeMicrophone = options.makeMicrophone ?? { MicrophoneCapture(onSamples: $0) }
+        self.checksMicrophonePermission = options.makeMicrophone == nil
+        self.makeMacAudio = options.makeMacAudio ?? { SystemAudioCapture(onSamples: $0) }
         (self.refineSignal, self.refineSignalContinuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     }
 
@@ -251,14 +387,14 @@ private final class LiveCaptionSession {
             }
 
         do {
-            try await self.macAudio.startRecognizer { [weak self] in self?.handle($0, from: .macAudio) }
+            try await self.startRecognizer(self.macAudio)
         } catch {
             DebugLogger.shared.error("Live Captions: Apple Speech unavailable: \(error)", source: "LiveCaptions")
             return self.fail(.speechUnavailable)
         }
         guard !self.isStopped else { return await self.macAudio.stop() }
         do {
-            try self.macAudio.startCapture { SystemAudioCapture(onSamples: $0) }
+            try self.macAudio.startCapture(self.makeMacAudio)
         } catch {
             DebugLogger.shared.error("Live Captions: system audio capture failed: \(error)", source: "LiveCaptions")
             await self.macAudio.stop()
@@ -276,6 +412,9 @@ private final class LiveCaptionSession {
         if self.speakerState == .preparing {
             Task { await self.startSpeakers() }
         }
+        if self.translationTarget != nil {
+            Task { await self.prepareTranslation() }
+        }
         if self.microphoneState == .on {
             await self.startMicrophone()
         }
@@ -283,6 +422,9 @@ private final class LiveCaptionSession {
 
     func stop() async {
         self.isStopped = true
+        self.translator?.cancel()
+        self.translator = nil
+        await self.save()
         self.tickTask?.cancel()
         self.refineTask?.cancel()
         self.refineSignalContinuation.finish()
@@ -344,6 +486,160 @@ private final class LiveCaptionSession {
         return tracker.turns.dominantSpeaker(in: (range.lowerBound - shift)...(range.upperBound - shift))
     }
 
+    // MARK: - Language
+
+    private func startRecognizer(_ pipeline: CaptionPipeline) async throws {
+        let source = pipeline.source
+        let mode = self.language.speechMode ?? SettingsStore.shared.speechLanguageMode
+        try await pipeline.startRecognizer(mode: mode) { [weak self] in self?.handle($0, from: source) }
+    }
+
+    /// Restarts Apple's recognizers in the new language; lines already shown stay.
+    func setLanguage(_ language: LiveCaptionLanguage, translationTarget: LiveCaptionLanguage?) async {
+        guard language != self.language, !self.isChangingLanguage, !self.isStopped, self.phase == .listening else { return }
+        let previous = self.language
+        self.isChangingLanguage = true
+        self.language = language
+        self.record.language = language
+        self.publish()
+        do {
+            try await self.restartRecognizers()
+        } catch {
+            DebugLogger.shared.error("Live Captions: couldn't switch to \(language.rawValue): \(error)", source: "LiveCaptions")
+            self.language = previous
+            self.record.language = previous
+            do {
+                try await self.restartRecognizers()
+            } catch {
+                self.isChangingLanguage = false
+                return self.fail(.speechUnavailable)
+            }
+        }
+        self.isChangingLanguage = false
+        DebugLogger.shared.info("Live Captions: captioning \(self.language.rawValue)", source: "LiveCaptions")
+        if self.language == language, translationTarget != self.translationTarget {
+            self.setTranslationTarget(translationTarget)
+        } else if self.translationTarget != nil {
+            await self.prepareTranslation()
+        }
+        self.publish()
+    }
+
+    private func restartRecognizers() async throws {
+        for pipeline in [self.macAudio, self.microphone].compactMap(\.self) {
+            // Words in progress belong to the old language's recognizer.
+            self.closed(pipeline.transcript.closeOpenLine(), in: pipeline)
+            pipeline.transcript.discardVolatile()
+            await pipeline.draft.stop()
+            guard !self.isStopped else { return }
+            try await self.startRecognizer(pipeline)
+        }
+    }
+
+    // MARK: - Translation
+
+    func setTranslationTarget(_ target: LiveCaptionLanguage?) {
+        guard !self.isStopped, target != self.translationTarget else { return }
+        self.translator?.cancel()
+        self.translator = nil
+        self.translations.removeAll()
+        self.translationTarget = target
+        self.record.translationTarget = target
+        self.translationStatus = .preparing
+        self.publish()
+        if target != nil, self.phase == .listening {
+            Task { await self.prepareTranslation() }
+        }
+    }
+
+    /// Starts translating once macOS has both languages, beginning with the lines on screen.
+    func prepareTranslation() async {
+        guard let target = self.translationTarget, !self.isStopped else { return }
+        let source = self.language
+        let readiness = await LiveCaptionTranslator.readiness(from: source, to: target)
+        guard self.translationTarget == target, self.language == source, !self.isStopped else { return }
+        self.translator?.cancel()
+        self.translator = nil
+        switch readiness {
+        case .ready:
+            self.translator = LiveCaptionTranslator(from: source, to: target)
+            self.translationStatus = .ready
+            self.translations.removeAll()
+            self.translateRecentLines()
+        case .needsDownload:
+            self.translationStatus = .needsDownload
+        case .unsupported:
+            self.translationStatus = .unsupported
+        }
+        DebugLogger.shared.info(
+            "Live Captions: translation \(source.rawValue) → \(target.rawValue): \(self.translationStatus)",
+            source: "LiveCaptions"
+        )
+        self.publish()
+    }
+
+    private func translate(_ text: String, rowID: String) {
+        guard let translator = self.translator else { return }
+        translator.translate(text) { [weak self] translated in
+            guard let self, !self.isStopped, self.translator === translator, let translated else { return }
+            self.translations[rowID] = translated
+            self.record.setTranslation(translated, for: rowID)
+            self.scheduleSave()
+            self.publish()
+        }
+    }
+
+    /// Translates the settled lines already on screen, oldest first.
+    private func translateRecentLines() {
+        var settled: [(time: Double, id: String, text: String)] = []
+        for pipeline in [self.macAudio, self.microphone].compactMap(\.self) {
+            let offset = pipeline.offset(from: self.startedAt)
+            for line in pipeline.transcript.lines where !line.isDraft {
+                settled.append((line.start + offset, Self.rowID(pipeline.source, line.id), line.text))
+            }
+        }
+        for line in settled.sorted(by: { $0.time < $1.time }).suffix(Self.backfilledTranslations) {
+            self.translate(line.text, rowID: line.id)
+        }
+    }
+
+    // MARK: - Transcript
+
+    private func scheduleSave() {
+        guard self.saveTask == nil, !self.isStopped else { return }
+        self.saveTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.saveDelay)
+            guard !Task.isCancelled else { return }
+            await self?.save()
+        }
+    }
+
+    /// Writes the transcript so far, replacing this session's previous save.
+    private func save() async {
+        self.saveTask?.cancel()
+        self.saveTask = nil
+        guard !self.record.isEmpty else { return }
+        let markdown = self.record.markdown()
+        let url = self.transcriptFolder.appending(path: LiveCaptionRecord.fileName(startedAt: self.startedAt))
+        let result = await Task.detached(priority: .utility) {
+            Result { try LiveCaptionTranscripts.write(markdown, to: url) }
+        }.value
+        switch result {
+        case .success:
+            self.savedTranscriptURL = url
+            if self.transcriptSaveFailed {
+                self.transcriptSaveFailed = false
+                self.publish()
+            }
+        case let .failure(error):
+            DebugLogger.shared.error("Live Captions: couldn't save the transcript: \(error)", source: "LiveCaptions")
+            if !self.transcriptSaveFailed {
+                self.transcriptSaveFailed = true
+                self.publish()
+            }
+        }
+    }
+
     // MARK: - Microphone
 
     func setMicrophoneEnabled(_ enabled: Bool) {
@@ -376,7 +672,7 @@ private final class LiveCaptionSession {
         pipeline.gate.isOpen = !AppServices.shared.asr.isDictationActive
         self.microphone = pipeline
         do {
-            try await pipeline.startRecognizer { [weak self] in self?.handle($0, from: .microphone) }
+            try await self.startRecognizer(pipeline)
             guard self.microphone === pipeline, !self.isStopped else { return await pipeline.stop() }
             try pipeline.startCapture(self.makeMicrophone)
         } catch {
@@ -522,13 +818,15 @@ private final class LiveCaptionSession {
     private func enqueue(_ ids: [Int], from source: LiveCaptionSource) {
         guard !ids.isEmpty, let pipeline = self.pipeline(for: source) else { return }
         guard self.refinesWithQwen else {
-            ids.forEach { pipeline.transcript.refine($0, with: nil) }
+            ids.forEach { self.settle($0, in: pipeline, with: nil) }
             return
         }
         self.refineQueue += ids.map { (source: source, id: $0) }
         while self.refineQueue.count > Self.maxQueuedLines {
             let dropped = self.refineQueue.removeFirst()
-            self.pipeline(for: dropped.source)?.transcript.refine(dropped.id, with: nil)
+            if let pipeline = self.pipeline(for: dropped.source) {
+                self.settle(dropped.id, in: pipeline, with: nil)
+            }
         }
         self.refineSignalContinuation.yield()
     }
@@ -538,7 +836,9 @@ private final class LiveCaptionSession {
             DebugLogger.shared.info("Live Captions: Qwen isn't available; showing Apple Speech words", source: "LiveCaptions")
             self.refinesWithQwen = false
             for item in self.refineQueue {
-                self.pipeline(for: item.source)?.transcript.refine(item.id, with: nil)
+                if let pipeline = self.pipeline(for: item.source) {
+                    self.settle(item.id, in: pipeline, with: nil)
+                }
             }
             self.refineQueue.removeAll()
             return self.publish()
@@ -559,27 +859,49 @@ private final class LiveCaptionSession {
         guard let line = pipeline.transcript.line(id),
               let range = pipeline.transcript.audioRange(for: id, padding: Self.linePadding)
         else {
-            pipeline.transcript.refine(id, with: nil)
+            self.settle(id, in: pipeline, with: nil)
             return self.publish()
         }
         let samples = pipeline.timeline.samples(from: range.lowerBound, to: range.upperBound)
         guard !samples.isEmpty else {
-            pipeline.transcript.refine(id, with: nil)
+            self.settle(id, in: pipeline, with: nil)
             return self.publish()
         }
 
         let started = Date()
-        let text = try? await qwen.transcribe(samples).text
+        let mode = self.language.speechMode ?? SettingsStore.shared.speechLanguageMode
+        let text = try? await qwen.transcribe(samples, in: mode).text
         guard !Task.isCancelled, !self.isStopped else { return }
         let cleaned = text.map { ASRService.applyCustomDictionary(ASRService.removeFillerWords($0)) }
         // Qwen hearing no words where Apple heard some (music, noise): keep Apple's line.
         let refined = cleaned.flatMap { TranscriptContent.hasNoWords($0) ? nil : $0 }
-        pipeline.transcript.refine(id, with: refined)
+        self.settle(id, in: pipeline, with: refined)
         DebugLogger.shared.debug(
             "Live Captions: refined \(pipeline.source.rawValue) line \(id) (\(String(format: "%.1f", line.end - line.start))s audio) in \(String(format: "%.2f", Date().timeIntervalSince(started)))s",
             source: "LiveCaptions"
         )
         self.publish()
+    }
+
+    /// A line's words are final (Qwen's, or Apple's when Qwen can't run): fixes its
+    /// speaker, records it for the transcript, and translates it.
+    private func settle(_ id: Int, in pipeline: CaptionPipeline, with text: String?) {
+        pipeline.transcript.refine(id, with: text)
+        guard let line = pipeline.transcript.line(id), !line.isDraft else { return }
+        let rowID = Self.rowID(pipeline.source, id)
+        var speaker: Int?
+        if pipeline.source == .macAudio, let heard = self.speaker(during: line.start...line.end) {
+            speaker = self.speakerNumbering.number(for: heard)
+            self.settledSpeakers[rowID] = speaker
+        }
+        let spoken = self.startedAt.addingTimeInterval(pipeline.offset(from: self.startedAt) + line.start)
+        self.record.add(.init(id: rowID, time: spoken, source: pipeline.source, speaker: speaker, text: line.text))
+        self.translate(line.text, rowID: rowID)
+        self.scheduleSave()
+    }
+
+    private static func rowID(_ source: LiveCaptionSource, _ id: Int) -> String {
+        "\(source.rawValue)-\(id)"
     }
 
     private func waitForDictationToFinish() async {
@@ -618,7 +940,11 @@ private final class LiveCaptionSession {
             rows: shown,
             microphone: self.microphoneState,
             speakers: self.speakerState,
-            showsSilenceHint: self.showsSilenceHint
+            showsSilenceHint: self.showsSilenceHint,
+            language: self.language,
+            isChangingLanguage: self.isChangingLanguage,
+            translation: self.translationTarget.map { .init(target: $0, status: self.translationStatus) },
+            transcriptSaveFailed: self.transcriptSaveFailed
         ))
     }
 
@@ -634,16 +960,18 @@ private final class LiveCaptionSession {
             let tail = line.state == .open && !transcript.volatileText.isEmpty
                 ? String(LiveCaptionTranscript.join(line.text, transcript.volatileText).dropFirst(line.text.count))
                 : ""
+            let id = Self.rowID(pipeline.source, line.id)
             let row = LiveCaptionViewState.Row(
-                id: "\(pipeline.source.rawValue)-\(line.id)",
+                id: id,
                 source: pipeline.source,
                 text: line.text,
                 formingTail: tail,
                 isDraft: line.isDraft,
                 isRefined: line.state == .refined,
                 speaker: pipeline.source == .macAudio
-                    ? self.speaker(during: line.start...line.end).map { self.speakerNumbering.number(for: $0) }
-                    : nil
+                    ? self.settledSpeakers[id] ?? self.speaker(during: line.start...line.end).map { self.speakerNumbering.number(for: $0) }
+                    : nil,
+                translation: self.translations[id]
             )
             rows.append((line.start + offset, row))
         }
@@ -683,8 +1011,11 @@ private final class CaptionPipeline {
         self.source = source
     }
 
-    func startRecognizer(onEvent: @escaping (LiveCaptionDraftEngine.Event) -> Void) async throws {
-        try await self.draft.start(onEvent: onEvent)
+    func startRecognizer(
+        mode: SettingsStore.SpeechLanguageMode,
+        onEvent: @escaping (LiveCaptionDraftEngine.Event) -> Void
+    ) async throws {
+        try await self.draft.start(mode: mode, onEvent: onEvent)
     }
 
     func startCapture(_ make: CaptionSourceFactory) throws {
@@ -758,13 +1089,18 @@ final class LiveCaptionDraftEngine {
     private nonisolated let lock = NSLock()
     private nonisolated(unsafe) var continuation: AsyncStream<AnalyzerInput>.Continuation?
     private nonisolated(unsafe) var analyzerFormat: AVAudioFormat?
+    /// Samples appended since capture started, fed or not.
+    private nonisolated(unsafe) var appendedSamples = 0
+    /// Capture time of the analyzer's time zero: a restarted analyzer (new language)
+    /// counts from when it started, the capture timeline from when capture did.
+    private nonisolated(unsafe) var origin: Double = 0
     /// Used only from the capture queue (`append`).
     private nonisolated let converter = BufferConverter()
     private var analyzer: SpeechAnalyzer?
     private var resultsTask: Task<Void, Never>?
 
-    func start(onEvent: @escaping (Event) -> Void) async throws {
-        let locale = await AppleSpeechAnalyzerProvider.resolveSupportedLocale()
+    func start(mode: SettingsStore.SpeechLanguageMode, onEvent: @escaping (Event) -> Void) async throws {
+        let locale = await AppleSpeechAnalyzerProvider.resolveSupportedLocale(for: mode)
         let transcriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
@@ -783,7 +1119,10 @@ final class LiveCaptionDraftEngine {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
                     let (start, end) = Self.speechSpan(of: result)
-                    onEvent(result.isFinal ? .final(text, start: start, end: end) : .volatile(text, start: start))
+                    let origin = self.lock.withLock { self.origin }
+                    onEvent(result.isFinal
+                        ? .final(text, start: start + origin, end: end + origin)
+                        : .volatile(text, start: start + origin))
                 }
             } catch is CancellationError {
                 // Stopped.
@@ -799,6 +1138,7 @@ final class LiveCaptionDraftEngine {
         self.lock.withLock {
             self.continuation = continuation
             self.analyzerFormat = format
+            self.origin = Double(self.appendedSamples) / CaptionAudio.sampleRate
         }
         DebugLogger.shared.info(
             "Live Captions: Apple Speech started (\(locale.identifier(.bcp47)))",
@@ -808,7 +1148,10 @@ final class LiveCaptionDraftEngine {
 
     /// Called on the capture queue with 16 kHz mono samples.
     nonisolated func append(_ samples: [Float]) {
-        let (continuation, format) = self.lock.withLock { (self.continuation, self.analyzerFormat) }
+        let (continuation, format) = self.lock.withLock {
+            self.appendedSamples += samples.count
+            return (self.continuation, self.analyzerFormat)
+        }
         guard let continuation, let buffer = Self.makeBuffer(samples) else { return }
         let input = format.flatMap { try? self.converter.convertBuffer(buffer, to: $0) } ?? buffer
         continuation.yield(AnalyzerInput(buffer: input))
@@ -816,7 +1159,9 @@ final class LiveCaptionDraftEngine {
 
     /// Commits Apple's words up to `seconds`, ending the current phrase there.
     func finalize(through seconds: Double) async {
-        try? await self.analyzer?.finalize(through: CMTime(seconds: seconds, preferredTimescale: 16000))
+        let origin = self.lock.withLock { self.origin }
+        guard seconds > origin else { return }
+        try? await self.analyzer?.finalize(through: CMTime(seconds: seconds - origin, preferredTimescale: 16000))
     }
 
     func stop() async {
