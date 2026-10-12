@@ -23,8 +23,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Request accessibility permissions for global hotkey monitoring
-        self.requestAccessibilityPermissions()
+        // Accessibility is requested from Home after SayIt explains why it's needed,
+        // never by a system prompt at launch.
 
         // Initialize app settings (dock visibility, etc.)
         SettingsStore.shared.initializeAppSettings()
@@ -65,47 +65,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             AppWindowHelper.bringToFront(mainWindow)
         }
     }
-
-    private func requestAccessibilityPermissions() {
-        let cooldownKey = "AXLastPromptAt"
-        let promptBuildKey = "AXLastPromptBuild"
-        let now = Date().timeIntervalSince1970
-        let defaults = UserDefaults.standard
-        let last = defaults.double(forKey: cooldownKey)
-        let lastPromptBuild = defaults.string(forKey: promptBuildKey)
-        let currentBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-        let oneDay: Double = 24 * 60 * 60
-
-        guard AccessibilityPromptPolicy.shouldPrompt(
-            isTrusted: AXIsProcessTrusted(),
-            hasPromptedThisSession: AXPromptState.hasPromptedThisSession,
-            now: now,
-            lastPromptAt: last,
-            lastPromptBuild: lastPromptBuild,
-            currentBuild: currentBuild,
-            cooldown: oneDay
-        ) else {
-            return
-        }
-
-        DebugLogger.shared.warning("Accessibility permissions required for global hotkeys.", source: "AppDelegate")
-        DebugLogger.shared.info("Prompting for Accessibility permission…", source: "AppDelegate")
-
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
-
-        AXPromptState.hasPromptedThisSession = true
-        defaults.set(now, forKey: cooldownKey)
-        defaults.set(currentBuild, forKey: promptBuildKey)
-
-        // If still not trusted shortly after, deep-link to the Accessibility pane for convenience
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            guard !AXIsProcessTrusted(),
-                  let url = AccessibilityPermissionAction.settingsURL
-            else { return }
-            NSWorkspace.shared.open(url)
-        }
-    }
 }
 
 enum AccessibilityPermissionAction {
@@ -140,8 +99,4 @@ enum AccessibilityPromptPolicy {
         let promptedRecently = lastPromptAt > 0 && (now - lastPromptAt) < cooldown
         return !promptedRecently || lastPromptBuild != currentBuild
     }
-}
-
-private enum AXPromptState {
-    static var hasPromptedThisSession: Bool = false
 }

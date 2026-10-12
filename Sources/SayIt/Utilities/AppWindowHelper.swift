@@ -1,7 +1,7 @@
 import AppKit
 
 enum AppWindowHelper {
-    static let minimumWindowSize = NSSize(width: 800, height: 500)
+    static let minimumWindowSize = NSSize(width: 800, height: 560)
     static let defaultWindowSize = NSSize(width: 1000, height: 700)
 
     static func isPrimaryWindow(_ window: NSWindow) -> Bool {
