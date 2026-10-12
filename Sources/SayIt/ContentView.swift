@@ -13,29 +13,98 @@ import CoreGraphics
 import Security
 import SwiftUI
 
-// MARK: - Sidebar Item Enum
+// MARK: - Sidebar
 
-enum SidebarItem: Hashable {
-    case welcome
-    case voiceEngine
-    case aiEnhancements
-    case support
-    case preferences
-    case meetingTools
-    case customDictionary
-    case stats
+/// Main-window destinations, in sidebar order (docs/design/DESIGN.md § 6).
+enum SidebarItem: Hashable, CaseIterable {
+    case home
     case history
+    case stats
     case commandMode
-    case rewriteMode
+    case fileTranscription
+    case general
+    case voiceEngine
+    case dictionary
+    case aiEnhancement
+    case help
+
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .history: return "History"
+        case .stats: return "Stats"
+        case .commandMode: return "Command Mode"
+        case .fileTranscription: return "File Transcription"
+        case .general: return "General"
+        case .voiceEngine: return "Voice Engine"
+        case .dictionary: return "Dictionary"
+        case .aiEnhancement: return "AI Enhancement"
+        case .help: return "Help & Feedback"
+        }
+    }
+
+    /// Outline SF Symbols at regular weight; never mixed with filled variants.
+    var systemImage: String {
+        switch self {
+        case .home: return "house"
+        case .history: return "clock.arrow.circlepath"
+        case .stats: return "chart.bar"
+        case .commandMode: return "terminal"
+        case .fileTranscription: return "doc.text"
+        case .general: return "gearshape"
+        case .voiceEngine: return "waveform"
+        case .dictionary: return "character.book.closed"
+        case .aiEnhancement: return "sparkles"
+        case .help: return "questionmark.circle"
+        }
+    }
+
+    static let sections: [SidebarSection] = [
+        SidebarSection(title: nil, items: [.home]),
+        SidebarSection(title: "Activity", items: [.history, .stats]),
+        SidebarSection(title: "Tools", items: [.commandMode, .fileTranscription]),
+        SidebarSection(title: "Settings", items: [.general, .voiceEngine, .dictionary, .aiEnhancement]),
+        SidebarSection(title: nil, items: [.help]),
+    ]
 }
 
-// MARK: - Minimal FluidAudio ASR Service (finalized text, macOS)
+struct SidebarSection: Identifiable {
+    let title: String?
+    let items: [SidebarItem]
+    var id: String { self.title ?? self.items.first?.title ?? "" }
+}
 
-// MARK: - Saved Provider Model
+/// Native sidebar: sections, outline symbols, system row sizes.
+struct MainSidebar: View {
+    @Binding var selection: SidebarItem?
 
-// Removed deprecated inline service and model
+    var body: some View {
+        List(selection: self.$selection) {
+            ForEach(SidebarItem.sections) { section in
+                if let title = section.title {
+                    Section(title) {
+                        self.rows(section.items)
+                    }
+                } else {
+                    Section {
+                        self.rows(section.items)
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle(AppIdentity.displayName)
+    }
 
-// NOTE: Streaming and AI response parsing is now handled by LLMClient
+    private func rows(_ items: [SidebarItem]) -> some View {
+        ForEach(items, id: \.self) { item in
+            NavigationLink(value: item) {
+                Label(item.title, systemImage: item.systemImage)
+            }
+            .accessibilityAddTraits(self.selection == item ? .isSelected : [])
+        }
+    }
+}
 
 struct ContentView: View {
     private enum ActiveRecordingMode: String {
@@ -46,7 +115,6 @@ struct ContentView: View {
     }
 
     @EnvironmentObject private var appServices: AppServices
-    @StateObject private var mouseTracker = MousePositionTracker()
     @StateObject private var commandModeService = CommandModeService()
     @StateObject private var rewriteModeService = RewriteModeService()
     @EnvironmentObject private var menuBarManager: MenuBarManager
@@ -67,7 +135,6 @@ struct ContentView: View {
     @State private var commandModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.commandModeHotkeyShortcut
     @State private var rewriteModeHotkeyShortcut: HotkeyShortcut = SettingsStore.shared.rewriteModeHotkeyShortcut
     @State private var isCommandModeShortcutEnabled: Bool = SettingsStore.shared.commandModeShortcutEnabled
-    @State private var aiSettingsExpanded: Bool = true
     @State private var isRewriteModeShortcutEnabled: Bool = SettingsStore.shared.rewriteModeShortcutEnabled
     @State private var isRecordingForRewrite: Bool = false // Track if current recording is for rewrite mode
     @State private var isRecordingForCommand: Bool = false // Track if current recording is for command mode
@@ -82,11 +149,10 @@ struct ContentView: View {
 
     @State private var selectedSidebarItem: SidebarItem?
     @State private var previousSidebarItem: SidebarItem? = nil // Track previous for mode transitions
-    @State private var playgroundUsed: Bool = SettingsStore.shared.playgroundUsed
+    /// A dictation has produced text at least once (persisted as `playgroundUsed`).
+    @State private var firstDictationDone: Bool = SettingsStore.shared.playgroundUsed
     @State private var recordingAppInfo: (name: String, bundleId: String, windowTitle: String)? = nil
-
-    // Command Mode State
-    // @State private var showCommandMode: Bool = false
+    @StateObject private var homeModelDownloader = HomeModelDownloader()
 
     // Audio Settings Tab State
     @State private var visualizerNoiseThreshold: Double = SettingsStore.shared.visualizerNoiseThreshold
@@ -95,10 +161,7 @@ struct ContentView: View {
     @State private var selectedInputUID: String = SettingsStore.shared.preferredInputDeviceUID ?? ""
     @State private var selectedOutputUID: String = SettingsStore.shared.preferredOutputDeviceUID ?? ""
 
-    // AI Prompts Tab State
-    @State private var aiInputText: String = ""
-    @State private var aiOutputText: String = ""
-    @State private var isCallingAI: Bool = false
+    // AI provider context (used to normalize stored provider/model selections on launch)
     @State private var openAIBaseURL: String = ModelRepository.shared.defaultBaseURL(for: "openai")
 
     @State private var pressAndHoldModeEnabled: Bool = SettingsStore.shared.pressAndHoldMode
@@ -108,9 +171,14 @@ struct ContentView: View {
     // Preferences Tab State
     @State private var launchAtStartup: Bool = SettingsStore.shared.launchAtStartup
     @State private var showInDock: Bool = SettingsStore.shared.showInDock
-    @State private var showRestartPrompt: Bool = false
-    @State private var didOpenAccessibilityPane: Bool = false
+    /// Accessibility was granted while running; the event tap needs a restart to pick it up.
+    @State private var accessibilityNeedsRestart: Bool = false
+    @State private var showAccessibilityRestartAlert: Bool = false
     private let accessibilityRestartFlagKey = AppIdentity.defaultsAccessibilityRestartKey
+    /// After Accessibility is granted, how long to wait for the shortcut listener to start
+    /// (12 × 0.5s) before concluding SayIt needs a restart.
+    private static let listenerStartChecks = 12
+    private static let listenerStartCheckInterval: UInt64 = 500_000_000
     private let hasAutoRestartedForAccessibilityKey = AppIdentity.defaultsAutoRestartedAccessibilityKey
     @State private var accessibilityPollingTask: Task<Void, Never>?
 
@@ -121,14 +189,6 @@ struct ContentView: View {
     @State private var selectedModelByProvider: [String: String] = [:]
     @State private var availableModels: [String] = ["gpt-4.1"] // derived from currentProvider
     @State private var selectedModel: String = "gpt-4.1" // derived from currentProvider
-    @State private var showingAddModel: Bool = false
-    @State private var newModelName: String = ""
-
-    // Model Reasoning Configuration
-    @State private var showingReasoningConfig: Bool = false
-    @State private var editingReasoningParamName: String = "reasoning_effort"
-    @State private var editingReasoningParamValue: String = "low"
-    @State private var editingReasoningEnabled: Bool = false
 
     // MARK: - Provider Management
 
@@ -148,11 +208,15 @@ struct ContentView: View {
                 self.detailView
             }
             .navigationSplitViewStyle(.balanced)
+            // One fixed minimum for every page. The window takes its minimum from the content,
+            // so per-page minimums would resize the window whenever the page changed.
+            .frame(
+                minWidth: AppWindowHelper.minimumWindowSize.width,
+                minHeight: AppWindowHelper.minimumWindowSize.height
+            )
         )
 
-        let tracked = layout.withMouseTracking(self.mouseTracker)
-        let env = tracked.environmentObject(self.mouseTracker)
-        let nav = env.onChange(of: self.menuBarManager.requestedNavigationDestination) { _, destination in
+        let nav = layout.onChange(of: self.menuBarManager.requestedNavigationDestination) { _, destination in
             self.handleMenuBarNavigation(destination)
         }
 
@@ -160,24 +224,18 @@ struct ContentView: View {
             self.appear = true
             self.accessibilityEnabled = self.checkAccessibilityPermissions()
 
-            // Handle any pending menu-bar navigation (e.g., Preferences clicked before window existed).
+            // Handle any pending menu-bar navigation (e.g., Settings clicked before window existed).
             self.handleMenuBarNavigation(self.menuBarManager.requestedNavigationDestination)
-            // If a previous run set a pending restart, clear it now on fresh launch
-            if UserDefaults.standard.bool(forKey: self.accessibilityRestartFlagKey) {
-                UserDefaults.standard.set(false, forKey: self.accessibilityRestartFlagKey)
-                self.showRestartPrompt = false
-            }
-            // Ensure no restart UI shows if we already have trust
-            if self.accessibilityEnabled { self.showRestartPrompt = false }
+            // A fresh launch picks up Accessibility trust, so any pending restart is done.
+            UserDefaults.standard.set(false, forKey: self.accessibilityRestartFlagKey)
+            self.accessibilityNeedsRestart = false
 
-            // Set default selection if none exists (from menu bar navigation)
-            // Show Preferences as default once voice model is ready (AI enhancement is optional)
+            // Home is always the default destination.
             if self.selectedSidebarItem == nil {
-                let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-                self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
+                self.selectedSidebarItem = .home
             }
 
-            // Reset auto-restart flag if permission was revoked (allows re-triggering if user re-grants)
+            // Allow the restart offer again if permission was revoked and is granted later.
             if !self.accessibilityEnabled {
                 UserDefaults.standard.set(false, forKey: self.hasAutoRestartedForAccessibilityKey)
             }
@@ -369,15 +427,9 @@ struct ContentView: View {
 
                             if self.asr.isRunning {
                                 DebugLogger.shared.debug("NSEvent monitor: Escape pressed, cancelling ASR recording", source: "ContentView")
+                                NotchOverlayManager.shared.present(.cancelled)
+                                self.clearActiveRecordingMode()
                                 Task { await self.asr.stopWithoutTranscription() }
-                                handled = true
-                            }
-
-                            // Close mode views if active
-                            if self.selectedSidebarItem == .commandMode || self.selectedSidebarItem == .rewriteMode {
-                                DebugLogger.shared.debug("NSEvent monitor: Escape pressed, closing mode view", source: "ContentView")
-                                let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-                                self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
                                 handled = true
                             }
 
@@ -548,9 +600,8 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openCustomDictionaryFromVoiceEngine)) { _ in
-            self.selectedSidebarItem = .customDictionary
+            self.selectedSidebarItem = .dictionary
         }
-        .overlay(alignment: .center) {}
         .alert(
             self.asr.errorTitle,
             isPresented: Binding(
@@ -558,9 +609,32 @@ struct ContentView: View {
                 set: { self.asr.showError = $0 }
             )
         ) {
-            Button("OK", role: .cancel) {}
+            self.errorRecoveryButtons
         } message: {
             Text(self.asr.errorMessage)
+        }
+        .alert(
+            "Restart SayIt to Finish Enabling Accessibility",
+            isPresented: self.$showAccessibilityRestartAlert
+        ) {
+            Button("Restart Now") { self.restartApp() }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("SayIt needs to restart once so your shortcut works in every app. Anything you’re dictating now will be stopped.")
+        }
+        .onChange(of: self.asr.isRunning) { _, isRunning in
+            // Audio is flowing: the overlay moves from “Starting…” to listening.
+            if isRunning, self.activeRecordingMode != .none {
+                NotchOverlayManager.shared.present(.listening)
+            }
+        }
+        .onChange(of: self.asr.showError) { _, isShowing in
+            // Errors during dictation must be visible even when this window is hidden.
+            let phase = NotchContentState.shared.phase
+            let dictationInFlight = self.activeRecordingMode != .none
+                || phase == .starting || phase == .listening || phase.isWorking
+            guard isShowing, dictationInFlight else { return }
+            NotchOverlayManager.shared.present(.failed(self.asr.errorTitle))
         }
         .onChange(of: self.audioObserver.changeTick) { _, _ in
             // Hardware change detected → refresh device lists
@@ -667,48 +741,15 @@ struct ContentView: View {
         return (provider: providerOut, model: modelOut)
     }
 
-    // MARK: - Mode Transition Handler
+    // MARK: - Navigation
 
-    /// Centralized handler for sidebar mode transitions to ensure proper cleanup and state management
+    /// Cleans up page-local state when leaving a page. Navigation never changes global
+    /// behaviour such as the overlay mode; shortcuts own that.
     private func handleModeTransition(from oldValue: SidebarItem?, to newValue: SidebarItem?) {
-        DebugLogger.shared.debug("Mode transition: \(String(describing: oldValue)) → \(String(describing: newValue))", source: "ContentView")
+        DebugLogger.shared.debug("Navigation: \(String(describing: oldValue)) → \(String(describing: newValue))", source: "ContentView")
 
-        // Clean up state from the previous mode
-        if let old = oldValue {
-            switch old {
-            case .commandMode:
-                // Close expanded command output notch if visible
-                if NotchOverlayManager.shared.isCommandOutputExpanded {
-                    DebugLogger.shared.debug("Closing expanded command notch on mode transition", source: "ContentView")
-                    NotchOverlayManager.shared.hideExpandedCommandOutput()
-                }
-                // Note: We don't clear command history here - user may want to return to it
-
-            case .rewriteMode:
-                // Clear rewrite state when leaving
-                self.rewriteModeService.clearState()
-
-            default:
-                break
-            }
-        }
-
-        // Set up state for the new mode
-        if let new = newValue {
-            switch new {
-            case .commandMode:
-                self.menuBarManager.setOverlayMode(.command)
-
-            case .rewriteMode:
-                self.menuBarManager.setOverlayMode(.edit)
-
-            default:
-                // For all other views, set to dictation mode
-                self.menuBarManager.setOverlayMode(.dictation)
-            }
-        } else {
-            // If newValue is nil, default to dictation
-            self.menuBarManager.setOverlayMode(.dictation)
+        if oldValue == .commandMode, newValue != .commandMode, NotchOverlayManager.shared.isCommandOutputExpanded {
+            NotchOverlayManager.shared.hideExpandedCommandOutput()
         }
     }
 
@@ -719,7 +760,7 @@ struct ContentView: View {
 
         switch destination {
         case .preferences:
-            self.selectedSidebarItem = .preferences
+            self.selectedSidebarItem = .general
         }
     }
 
@@ -730,303 +771,73 @@ struct ContentView: View {
     }
 
     private var sidebarView: some View {
-        List(selection: self.$selectedSidebarItem) {
-            // Priority section: Welcome (if not onboarded) or Preferences (if voice model ready)
-            // Voice model readiness is the key onboarding milestone; AI enhancement is optional
-            let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-            if !isOnboarded {
-                NavigationLink(value: SidebarItem.welcome) {
-                    Label("Welcome", systemImage: "house.fill")
-                        .font(.system(size: 15, weight: .medium))
-                }
-                .listRowBackground(self.sidebarRowBackground(for: .welcome))
-            } else {
-                NavigationLink(value: SidebarItem.preferences) {
-                    Label("Preferences", systemImage: "gearshape.fill")
-                        .font(.system(size: 15, weight: .medium))
-                }
-                .listRowBackground(self.sidebarRowBackground(for: .preferences))
-            }
-
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    self.aiSettingsExpanded.toggle()
-                }
-            }) {
-                HStack {
-                    Label("AI Settings", systemImage: "sparkles")
-                        .font(.system(size: 15, weight: .medium))
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(self.aiSettingsExpanded ? 90 : 0))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if self.aiSettingsExpanded {
-                NavigationLink(value: SidebarItem.voiceEngine) {
-                    Label("Voice Engine", systemImage: "waveform")
-                        .font(.system(size: 15, weight: .medium))
-                        .padding(.leading, 18)
-                }
-                .listRowBackground(self.sidebarRowBackground(for: .voiceEngine))
-
-                NavigationLink(value: SidebarItem.aiEnhancements) {
-                    Label("AI Enhancements", systemImage: "brain")
-                        .font(.system(size: 15, weight: .medium))
-                        .padding(.leading, 18)
-                }
-                .listRowBackground(self.sidebarRowBackground(for: .aiEnhancements))
-            }
-
-            // If NOT onboarded, Preferences comes here (below AI Settings)
-            if !isOnboarded {
-                NavigationLink(value: SidebarItem.preferences) {
-                    Label("Preferences", systemImage: "gearshape.fill")
-                        .font(.system(size: 15, weight: .medium))
-                }
-                .listRowBackground(self.sidebarRowBackground(for: .preferences))
-            }
-
-            NavigationLink(value: SidebarItem.commandMode) {
-                Label("Command Mode", systemImage: "terminal.fill")
-                    .font(.system(size: 15, weight: .medium))
-            }
-            .listRowBackground(self.sidebarRowBackground(for: .commandMode))
-
-            NavigationLink(value: SidebarItem.meetingTools) {
-                Label("File Transcription", systemImage: "doc.text.fill")
-                    .font(.system(size: 15, weight: .medium))
-            }
-            .listRowBackground(self.sidebarRowBackground(for: .meetingTools))
-
-            NavigationLink(value: SidebarItem.customDictionary) {
-                Label("Custom Dictionary", systemImage: "text.book.closed.fill")
-                    .font(.system(size: 15, weight: .medium))
-            }
-            .listRowBackground(self.sidebarRowBackground(for: .customDictionary))
-
-            NavigationLink(value: SidebarItem.support) {
-                Label("Support", systemImage: "questionmark.circle")
-                    .font(.system(size: 15, weight: .medium))
-            }
-            .listRowBackground(self.sidebarRowBackground(for: .support))
-
-            NavigationLink(value: SidebarItem.stats) {
-                Label("Stats", systemImage: "chart.bar.fill")
-                    .font(.system(size: 15, weight: .medium))
-            }
-            .listRowBackground(self.sidebarRowBackground(for: .stats))
-
-            NavigationLink(value: SidebarItem.history) {
-                Label("History", systemImage: "clock.arrow.circlepath")
-                    .font(.system(size: 15, weight: .medium))
-            }
-            .listRowBackground(self.sidebarRowBackground(for: .history))
-
-            // If onboarded, "Getting Started" comes at the bottom
-            if isOnboarded {
-                NavigationLink(value: SidebarItem.welcome) {
-                    Label("Getting Started", systemImage: "house.fill")
-                        .font(.system(size: 15, weight: .medium))
-                }
-                .listRowBackground(self.sidebarRowBackground(for: .welcome))
-            }
-        }
-        .listStyle(.sidebar)
-        .animation(nil, value: self.selectedSidebarItem)
-        .navigationTitle("SayIt")
-        .scrollContentBackground(.hidden)
-        .background {
-            ZStack {
-                self.theme.palette.sidebarBackground
-                Rectangle().fill(self.theme.materials.sidebar)
-            }
-            .ignoresSafeArea()
-        }
-        .tint(self.theme.palette.accent)
-    }
-
-    private func sidebarRowBackground(for item: SidebarItem) -> some View {
-        return Color.clear
+        MainSidebar(selection: self.$selectedSidebarItem)
     }
 
     private var detailView: some View {
         ZStack {
-            self.theme.palette.windowBackground
-                .opacity(0.98)
-                .ignoresSafeArea()
-
-            Rectangle()
-                .fill(self.theme.materials.window)
-                .opacity(0.75)
+            self.theme.palette.contentBackground
                 .ignoresSafeArea()
 
             self.detailContent
-                .transaction { transaction in
-                    transaction.animation = nil
-                }
+                .id(self.selectedSidebarItem ?? .home)
+                .transition(.opacity)
         }
+        // A quiet cross-fade between pages; Motion.fade is also the Reduce Motion fallback.
+        .animation(Motion.fade, value: self.selectedSidebarItem)
     }
 
     private var detailContent: AnyView {
-        switch self.selectedSidebarItem ?? .welcome {
-        case .welcome:
-            return AnyView(self.welcomeView)
+        switch self.selectedSidebarItem ?? .home {
+        case .home:
+            return AnyView(self.homeView)
         case .voiceEngine:
             return AnyView(VoiceEngineSettingsScreen(
                 appServices: self.appServices,
                 theme: self.theme
             ))
-        case .aiEnhancements:
+        case .aiEnhancement:
             return AnyView(AIEnhancementSettingsScreen(
                 menuBarManager: self.menuBarManager,
                 theme: self.theme
             ))
-        case .support:
+        case .help:
             return AnyView(FeedbackView())
-        case .preferences:
-            return AnyView(self.preferencesView)
-        case .meetingTools:
-            return AnyView(self.meetingToolsView)
-        case .customDictionary:
+        case .general:
+            return AnyView(self.generalSettingsView)
+        case .fileTranscription:
+            return AnyView(MeetingTranscriptionView(asrService: self.asr))
+        case .dictionary:
             return AnyView(CustomDictionaryView())
         case .stats:
-            return AnyView(self.statsView)
+            return AnyView(StatsView())
         case .commandMode:
             return AnyView(self.commandModeView)
-        case .rewriteMode:
-            return AnyView(self.rewriteModeView)
         case .history:
             return AnyView(TranscriptionHistoryView())
         }
     }
 
-    // MARK: - Welcome Guide
+    // MARK: - Home
 
-    private var welcomeView: some View {
-        WelcomeView(
+    private var homeView: some View {
+        HomeScreen(
+            downloader: self.homeModelDownloader,
             selectedSidebarItem: self.$selectedSidebarItem,
-            playgroundUsed: self.$playgroundUsed,
+            firstDictationDone: self.$firstDictationDone,
             isTranscriptionFocused: self.$isTranscriptionFocused,
             accessibilityEnabled: self.accessibilityEnabled,
+            accessibilityNeedsRestart: self.accessibilityNeedsRestart,
             stopAndProcessTranscription: { await self.stopAndProcessTranscription() },
             startRecording: self.startRecording,
-            openAccessibilitySettings: self.openAccessibilitySettings
+            openAccessibilitySettings: self.openAccessibilitySettings,
+            restartApp: self.restartApp
         )
     }
 
-    // MARK: - Microphone Permission View (Kept inline for RecordingView)
+    // MARK: - General Settings
 
-    private var microphonePermissionView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                // Status indicator
-                Circle()
-                    .fill(self.asr.micStatus == .authorized ? self.theme.palette.success : self.theme.palette.warning)
-                    .frame(width: 10, height: 10)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(self.labelFor(status: self.asr.micStatus))
-                        .fontWeight(.medium)
-                        .foregroundStyle(self.asr.micStatus == .authorized ? self.theme.palette.primaryText : self.theme.palette.warning)
-
-                    if self.asr.micStatus != .authorized {
-                        Text("Microphone access is required for voice recording")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-
-                self.microphoneActionButton
-            }
-
-            // Step-by-step instructions when microphone is not authorized
-            if self.asr.micStatus != .authorized {
-                self.microphoneInstructionsView
-            }
-        }
-    }
-
-    private var microphoneActionButton: some View {
-        Group {
-            if self.asr.micStatus == .notDetermined {
-                Button {
-                    self.asr.requestMicAccess()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "mic.fill")
-                        Text("Grant Access")
-                            .fontWeight(.medium)
-                    }
-                }
-                .buttonStyle(GlassButtonStyle())
-                .buttonHoverEffect()
-            } else if self.asr.micStatus == .denied {
-                Button {
-                    self.asr.openSystemSettingsForMic()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "gear")
-                        Text("Open Settings")
-                            .fontWeight(.medium)
-                    }
-                }
-                .buttonStyle(GlassButtonStyle())
-                .buttonHoverEffect()
-            }
-        }
-    }
-
-    private var microphoneInstructionsView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "info.circle.fill")
-                    .foregroundStyle(self.theme.palette.accent)
-                    .font(.caption)
-                Text("How to enable microphone access:")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                if self.asr.micStatus == .notDetermined {
-                    self.instructionStep(number: "1", text: "Click **Grant Access** above")
-                    self.instructionStep(number: "2", text: "Choose **Allow** in the system dialog")
-                } else if self.asr.micStatus == .denied {
-                    self.instructionStep(number: "1", text: "Click **Open Settings** above")
-                    self.instructionStep(number: "2", text: "Find **SayIt** in the microphone list")
-                    self.instructionStep(number: "3", text: "Toggle **SayIt ON** to allow access")
-                }
-            }
-            .padding(.leading, 4)
-        }
-        .padding(12)
-        .background(self.theme.palette.accent.opacity(0.12))
-        .cornerRadius(8)
-    }
-
-    private func instructionStep(number: String, text: String) -> some View {
-        HStack(spacing: 8) {
-            Text(number + ".")
-                .font(.caption2)
-                .foregroundStyle(self.theme.palette.accent)
-                .fontWeight(.semibold)
-                .frame(width: 16)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.primary)
-        }
-    }
-
-    // MARK: - Preferences View
-
-    private var preferencesView: some View {
+    private var generalSettingsView: some View {
         SettingsView(
             appear: self.$appear,
             visualizerNoiseThreshold: self.$visualizerNoiseThreshold,
@@ -1058,38 +869,37 @@ struct ContentView: View {
         )
     }
 
-    private var recordingView: some View {
-        RecordingView(
-            appear: self.$appear,
-            stopAndProcessTranscription: { await self.stopAndProcessTranscription() },
-            startRecording: self.startRecording
-        )
-    }
-
     private var commandModeView: some View {
         CommandModeView(service: self.commandModeService, onClose: {
-            let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-            self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
+            self.selectedSidebarItem = .home
         })
     }
 
-    private var rewriteModeView: some View {
-        RewriteModeView(service: self.rewriteModeService, onClose: {
-            let isOnboarded = self.asr.isAsrReady || self.asr.modelsExistOnDisk
-            self.selectedSidebarItem = isOnboarded ? .preferences : .welcome
-        })
-    }
+    // MARK: - Error Recovery
 
-    // MARK: - Meeting Transcription (Coming Soon)
-
-    private var meetingToolsView: some View {
-        MeetingTranscriptionView(asrService: self.asr)
-    }
-
-    // MARK: - Stats View
-
-    private var statsView: some View {
-        StatsView()
+    /// Recovery actions for the main-window error alert, chosen from the error title.
+    @ViewBuilder
+    private var errorRecoveryButtons: some View {
+        let title = self.asr.errorTitle.lowercased()
+        if title.contains("microphone") {
+            Button("Open System Settings") { self.asr.openSystemSettingsForMic() }
+            Button("Close", role: .cancel) {}
+        } else if title.contains("model") || title.contains("voice") || title.contains("speech") {
+            Button("Try Again") {
+                Task {
+                    do {
+                        try await self.asr.ensureAsrReady()
+                    } catch {
+                        self.asr.errorMessage = error.localizedDescription
+                        self.asr.showError = true
+                    }
+                }
+            }
+            Button("Open Voice Engine") { self.selectedSidebarItem = .voiceEngine }
+            Button("Close", role: .cancel) {}
+        } else {
+            Button("OK", role: .cancel) {}
+        }
     }
 
     // Audio settings merged into SettingsView
@@ -1106,10 +916,6 @@ struct ContentView: View {
             }
         }
     }
-
-    // MARK: - Model Management Functions
-
-    private func saveModels() { SettingsStore.shared.availableModels = self.availableModels }
 
     // MARK: - Provider Management Functions
 
@@ -1128,10 +934,6 @@ struct ContentView: View {
         if url.contains("groq.com") { self.currentProvider = "groq"; return }
         // For saved/custom, keep current or derive from selectedProviderID
         self.currentProvider = self.providerKey(for: self.selectedProviderID)
-    }
-
-    private func saveSavedProviders() {
-        SettingsStore.shared.savedProviders = self.savedProviders
     }
 
     // MARK: - App Detection and Context-Aware Prompts
@@ -1528,6 +1330,11 @@ struct ContentView: View {
 
     // MARK: - Stop and Process Transcription
 
+    /// True when the user cancelled (Esc / close button) after `token` was captured.
+    private func wasCancelled(since token: UInt64) -> Bool {
+        NotchContentState.shared.cancellationCount != token
+    }
+
     private func stopAndProcessTranscription() async {
         DebugLogger.shared.debug("stopAndProcessTranscription called", source: "ContentView")
 
@@ -1541,13 +1348,13 @@ struct ContentView: View {
         )
 
         self.clearActiveRecordingMode()
+        let cancelToken = NotchContentState.shared.cancellationCount
 
-        // Show "Transcribing..." state before calling stop() to keep overlay visible.
-        // The asr.stop() call performs the final transcription which can take a moment
-        // (especially for slower models like Whisper Medium/Large).
+        // Keep the overlay visible in its “Transcribing” phase while asr.stop() finalizes;
+        // slower models (Whisper Medium/Large) can take a moment.
         DebugLogger.shared.debug("Showing transcription processing state", source: "ContentView")
         self.menuBarManager.setProcessing(true)
-        NotchOverlayManager.shared.updateTranscriptionText("Transcribing...")
+        NotchOverlayManager.shared.present(.transcribing)
 
         // Give SwiftUI a chance to render the processing state before we do heavier work
         // (ASR finalization + optional AI post-processing).
@@ -1557,15 +1364,27 @@ struct ContentView: View {
         // The processing indicator will stay visible during this phase
         let transcribedText = await asr.stop()
 
-        // Reset the transcription text display after transcription completes
-        NotchOverlayManager.shared.updateTranscriptionText("")
-
-        guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
-            // Hide processing state when returning early
+        if self.wasCancelled(since: cancelToken) {
+            DebugLogger.shared.info("Dictation cancelled while transcribing; discarding text", source: "ContentView")
             self.menuBarManager.setProcessing(false)
             return
         }
+
+        // Silence often comes back as a hesitation sound ("嗯。"); never type that.
+        guard !TranscriptContent.hasNoWords(transcribedText) else {
+            DebugLogger.shared.debug("Transcription had no words", source: "ContentView")
+            // Say why nothing was typed before the overlay leaves.
+            if self.asr.showError {
+                NotchOverlayManager.shared.present(.failed(self.asr.errorTitle))
+            } else {
+                NotchOverlayManager.shared.present(.done(.noSpeech))
+            }
+            self.menuBarManager.setProcessing(false)
+            return
+        }
+
+        // Keep what was heard on screen (de-emphasized) while any further work runs.
+        NotchOverlayManager.shared.updateTranscriptionText(transcribedText)
 
         // Prompt Test Mode: reroute dictation hotkey output into the prompt editor (no typing/clipboard/history).
         let promptTest = DictationPromptTestCoordinator.shared
@@ -1575,14 +1394,17 @@ struct ContentView: View {
             promptTest.lastError = ""
 
             guard DictationAIPostProcessingGate.isConfigured() else {
-                promptTest.lastError = "AI post-processing is not configured. Enable AI Enhancement and configure a provider/model (and API key for non-local endpoints)."
+                promptTest.lastError = "AI Enhancement isn’t set up. Turn it on and choose a provider and model (and an API key for cloud providers)."
+                NotchOverlayManager.shared.present(.idle)
                 self.menuBarManager.setProcessing(false)
                 return
             }
 
             promptTest.isProcessing = true
-            // Processing already true from above
+            NotchOverlayManager.shared.present(.refining)
             defer {
+                // Prompt tests write into the prompt editor, not another app.
+                NotchOverlayManager.shared.present(.idle)
                 self.menuBarManager.setProcessing(false)
                 promptTest.isProcessing = false
             }
@@ -1631,15 +1453,14 @@ struct ContentView: View {
         }
 
         var finalText: String
+        var aiFailed = false
 
         // Check if we should use AI processing
         let shouldUseAI = DictationAIPostProcessingGate.isConfigured()
 
         if shouldUseAI {
             DebugLogger.shared.debug("Routing transcription through AI post-processing", source: "ContentView")
-
-            // Update overlay text to show we're now refining (processing already true)
-            NotchOverlayManager.shared.updateTranscriptionText("Refining...")
+            NotchOverlayManager.shared.present(.refining)
 
             // Ensure the status label becomes visible immediately.
             await Task.yield()
@@ -1653,18 +1474,16 @@ struct ContentView: View {
                     source: "ContentView"
                 )
                 finalText = transcribedText
+                aiFailed = true
             }
-
-            // Clear transient status text before leaving processing state to avoid
-            // a brief non-shimmer "Refining..." preview flash.
-            NotchOverlayManager.shared.updateTranscriptionText("")
-
-            // Hide processing animation
-            self.menuBarManager.setProcessing(false)
         } else {
             finalText = transcribedText
-            // No AI processing, hide the processing state
+        }
+
+        if self.wasCancelled(since: cancelToken) {
+            DebugLogger.shared.info("Dictation cancelled while enhancing; discarding text", source: "ContentView")
             self.menuBarManager.setProcessing(false)
+            return
         }
 
         // Apply GAAV formatting as the FINAL step (after AI post-processing)
@@ -1710,12 +1529,35 @@ struct ContentView: View {
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         let frontmostName = frontmostApp?.localizedName ?? "Unknown"
         let isSayItFrontmost = frontmostApp?.bundleIdentifier?.contains("sayit") == true
-        let shouldTypeExternally = !isSayItFrontmost || self.isTranscriptionFocused == false
+        let wantsExternalTyping = !isSayItFrontmost || self.isTranscriptionFocused == false
+        // Typing into other apps needs Accessibility; without it, fall back to the clipboard.
+        let canTypeExternally = AXIsProcessTrusted()
+        let shouldTypeExternally = wantsExternalTyping && canTypeExternally
 
         DebugLogger.shared.debug(
             "Typing decision → frontmost: \(frontmostName), sayItFrontmost: \(isSayItFrontmost), editorFocused: \(self.isTranscriptionFocused), willTypeExternally: \(shouldTypeExternally)",
             source: "ContentView"
         )
+
+        // The first dictation that produces text completes setup.
+        if !self.firstDictationDone {
+            self.firstDictationDone = true
+            SettingsStore.shared.playgroundUsed = true
+        }
+
+        // Report the outcome before leaving the processing state, so the overlay shows it
+        // for its dwell time instead of disappearing.
+        let outcome: OverlayOutcome
+        if wantsExternalTyping, !canTypeExternally {
+            if !SettingsStore.shared.copyTranscriptionToClipboard {
+                ClipboardService.copyToClipboard(finalText)
+            }
+            outcome = .copied
+        } else {
+            outcome = aiFailed ? .insertedOriginal : .inserted
+        }
+        NotchOverlayManager.shared.present(.done(outcome))
+        self.menuBarManager.setProcessing(false)
 
         if shouldTypeExternally {
             // Await typing completion before proceeding to edit tracker
@@ -1874,10 +1716,13 @@ struct ContentView: View {
 
         self.setActiveRecordingMode(.dictate)
         self.menuBarManager.setProcessing(true)
-        NotchOverlayManager.shared.updateTranscriptionText("Reprocessing...")
+        let cancelToken = NotchContentState.shared.cancellationCount
+        NotchOverlayManager.shared.updateTranscriptionText(transcribedText)
+        NotchOverlayManager.shared.present(.refining)
         await Task.yield()
 
         var finalText = transcribedText
+        var aiFailed = false
         let shouldUseAI = DictationAIPostProcessingGate.isConfigured()
         if shouldUseAI {
             switch await self.processTextWithAI(transcribedText) {
@@ -1888,10 +1733,17 @@ struct ContentView: View {
                     "AI reprocessing failed; using the original transcription: \(message)",
                     source: "ContentView"
                 )
+                aiFailed = true
             }
         }
 
-        NotchOverlayManager.shared.updateTranscriptionText("")
+        if self.wasCancelled(since: cancelToken) {
+            self.menuBarManager.setProcessing(false)
+            self.clearActiveRecordingMode()
+            return
+        }
+
+        NotchOverlayManager.shared.present(.done(aiFailed ? .insertedOriginal : .inserted))
         self.menuBarManager.setProcessing(false)
 
         finalText = ASRService.applyGAAVFormatting(finalText)
@@ -1936,17 +1788,29 @@ struct ContentView: View {
 
         // Show processing animation
         self.menuBarManager.setProcessing(true)
+        let cancelToken = NotchContentState.shared.cancellationCount
+        NotchOverlayManager.shared.present(.refining)
 
         // Process the request - service handles both cases:
         // - With originalText: rewrites existing text based on instruction
         // - Without originalText: improves/refines the spoken text
         await self.rewriteModeService.processRewriteRequest(instruction)
 
+        if self.wasCancelled(since: cancelToken) {
+            DebugLogger.shared.info("Edit cancelled while processing; not replacing text", source: "ContentView")
+            self.menuBarManager.setProcessing(false)
+            self.rewriteModeService.clearState()
+            return
+        }
+
+        let succeeded = !self.rewriteModeService.rewrittenText.isEmpty
+        NotchOverlayManager.shared.present(succeeded ? .done(.inserted) : .failed("Couldn’t Edit Text"))
+
         // Hide processing animation
         self.menuBarManager.setProcessing(false)
 
         // If rewrite was successful, type the result
-        if !self.rewriteModeService.rewrittenText.isEmpty {
+        if succeeded {
             DebugLogger.shared.info("Rewrite successful, typing result (chars: \(self.rewriteModeService.rewrittenText.count))", source: "ContentView")
 
             // Copy to clipboard as backup
@@ -2071,12 +1935,14 @@ struct ContentView: View {
 
         // Show processing animation
         self.menuBarManager.setProcessing(true)
+        NotchOverlayManager.shared.present(.refining)
 
         // Process the command through CommandModeService
         // This stores the conversation history and executes any terminal commands
         await self.commandModeService.processUserCommand(command)
 
-        // Hide processing animation
+        // The expanded command output is the result surface; the regular overlay just leaves.
+        NotchOverlayManager.shared.present(.idle)
         self.menuBarManager.setProcessing(false)
 
         DebugLogger.shared.info("Command processed, conversation stored in Command Mode", source: "ContentView")
@@ -2109,6 +1975,7 @@ struct ContentView: View {
         let info = self.getCurrentAppInfo()
         self.recordingAppInfo = info
         DebugLogger.shared.debug("Captured recording app context: app=\(info.name), bundleId=\(info.bundleId), title=\(info.windowTitle)", source: "ContentView")
+        self.beginOverlaySession()
         Task {
             await self.asr.start()
         }
@@ -2125,6 +1992,13 @@ struct ContentView: View {
         }
     }
 
+    /// Resets the overlay for a new recording: clears the previous transcript and shows
+    /// “Starting…” until audio flows.
+    private func beginOverlaySession() {
+        NotchOverlayManager.shared.updateTranscriptionText("")
+        NotchOverlayManager.shared.present(.starting)
+    }
+
     /// Best-effort: re-activate the app that was focused when recording started.
     /// Adds a short delay after activation so macOS can deliver focus before typing begins.
     private func restoreFocusToRecordingTarget() async {
@@ -2133,32 +2007,6 @@ struct ContentView: View {
         if activated {
             // Small delay to allow window focus to settle before typing events fire.
             try? await Task.sleep(nanoseconds: 80_000_000) // 80ms
-        }
-    }
-
-    // MARK: - ASR Model Management
-
-    /// Manual download trigger - downloads models when user clicks button
-    private func downloadModels() async {
-        DebugLogger.shared.debug("User initiated model download", source: "ContentView")
-
-        do {
-            try await self.asr.ensureAsrReady()
-            DebugLogger.shared.info("Model download completed successfully", source: "ContentView")
-        } catch {
-            DebugLogger.shared.error("Failed to download models: \(error)", source: "ContentView")
-        }
-    }
-
-    /// Delete models from disk
-    private func deleteModels() async {
-        DebugLogger.shared.debug("User initiated model deletion", source: "ContentView")
-
-        do {
-            try await self.asr.clearModelCache()
-            DebugLogger.shared.info("Models deleted successfully", source: "ContentView")
-        } catch {
-            DebugLogger.shared.error("Failed to delete models: \(error)", source: "ContentView")
         }
     }
 
@@ -2194,97 +2042,9 @@ struct ContentView: View {
                 "Failed to load cached speech model: \(error.localizedDescription)",
                 source: "ContentView"
             )
-            self.asr.errorTitle = "Voice Model Failed to Load"
+            self.asr.errorTitle = "Speech Model Couldn’t Load"
             self.asr.errorMessage = error.localizedDescription
             self.asr.showError = true
-        }
-    }
-
-    // MARK: - Model Management
-
-    private func addNewModel() {
-        guard !self.newModelName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else { return }
-
-        let modelName = self.newModelName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        let key = self.providerKey(for: self.selectedProviderID)
-
-        // Get current list or start fresh if empty
-        var list = self.availableModelsByProvider[key] ?? self.availableModels
-        if list.isEmpty {
-            list = []
-        }
-
-        // Add the new model if not already in list
-        if !list.contains(modelName) {
-            list.append(modelName)
-        }
-
-        // Update state
-        self.availableModelsByProvider[key] = list
-        SettingsStore.shared.availableModelsByProvider = self.availableModelsByProvider
-
-        // Update saved provider if exists
-        if let providerIndex = savedProviders.firstIndex(where: { $0.id == selectedProviderID }) {
-            let updatedProvider = SettingsStore.SavedProvider(
-                id: self.savedProviders[providerIndex].id,
-                name: self.savedProviders[providerIndex].name,
-                baseURL: self.savedProviders[providerIndex].baseURL,
-                models: list
-            )
-            self.savedProviders[providerIndex] = updatedProvider
-            self.saveSavedProviders()
-        }
-
-        // Update UI state
-        self.availableModels = list
-        self.selectedModel = modelName
-        self.selectedModelByProvider[key] = modelName
-        SettingsStore.shared.selectedModelByProvider = self.selectedModelByProvider
-
-        // Close the add model UI
-        self.showingAddModel = false
-        self.newModelName = ""
-    }
-
-    // MARK: - OpenAI-compatible call for playground
-
-    private func callOpenAIChat() async {
-        guard !self.isCallingAI else { return }
-        await MainActor.run { self.isCallingAI = true }
-        defer { Task { await MainActor.run { isCallingAI = false } } }
-
-        let result = await processTextWithAI(aiInputText)
-        await MainActor.run {
-            switch result {
-            case let .success(output):
-                self.aiOutputText = output
-            case let .failure(message):
-                self.aiOutputText = "Error: \(message)"
-            }
-        }
-    }
-
-    private func getModelStatusText() -> String {
-        if self.asr.isLoadingModel {
-            return "Loading model into memory... (30-60 sec)"
-        } else if self.asr.isDownloadingModel {
-            return "Downloading model... Please wait."
-        } else if self.asr.isAsrReady {
-            return "Model is ready to use!"
-        } else if self.asr.modelsExistOnDisk {
-            return "Model cached. Will load on first use."
-        } else {
-            return "Model will download when needed."
-        }
-    }
-
-    private func labelFor(status: AVAuthorizationStatus) -> String {
-        switch status {
-        case .authorized: return "Microphone: Authorized"
-        case .denied: return "Microphone: Denied"
-        case .restricted: return "Microphone: Restricted"
-        case .notDetermined: return "Microphone: Not Determined"
-        @unknown default: return "Microphone: Unknown"
         }
     }
 
@@ -2292,6 +2052,8 @@ struct ContentView: View {
         return AXIsProcessTrusted()
     }
 
+    /// Requests Accessibility from an explicit user action (Home or General), after the
+    /// UI has explained why: shows the system prompt and opens the Accessibility pane.
     private func openAccessibilitySettings() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         AccessibilityPermissionAction.perform(
@@ -2302,8 +2064,8 @@ struct ContentView: View {
                 _ = NSWorkspace.shared.open(url)
             }
         )
-        self.didOpenAccessibilityPane = true
         UserDefaults.standard.set(true, forKey: self.accessibilityRestartFlagKey)
+        self.startAccessibilityPolling()
     }
 
     private func restartApp() {
@@ -2311,44 +2073,53 @@ struct ContentView: View {
         let process = Process()
         process.launchPath = "/usr/bin/open"
         process.arguments = ["-n", appPath]
-        // Clear pending flag and hide prompt before restarting
         UserDefaults.standard.set(false, forKey: self.accessibilityRestartFlagKey)
-        self.showRestartPrompt = false
+        self.accessibilityNeedsRestart = false
         try? process.run()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             NSApp.terminate(nil)
         }
     }
 
+    /// Watches for Accessibility being granted in System Settings. When it is, SayIt tries
+    /// to start the shortcut listener in place; only if that fails does it ask to restart.
     private func startAccessibilityPolling() {
-        // Don't poll if already enabled or if we've already auto-restarted once
         guard !self.accessibilityEnabled else { return }
-        guard !UserDefaults.standard.bool(forKey: self.hasAutoRestartedForAccessibilityKey) else { return }
 
-        // Cancel any existing polling task
         self.accessibilityPollingTask?.cancel()
-
-        // Start background polling
         self.accessibilityPollingTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // Poll every 2 seconds
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
 
-                // Check if permission was granted
-                let nowTrusted = AXIsProcessTrusted()
-                if nowTrusted && !self.accessibilityEnabled {
-                    await MainActor.run {
-                        DebugLogger.shared.info("Accessibility permission granted! Auto-restarting app...", source: "ContentView")
-
-                        // Mark that we've auto-restarted to prevent loops
-                        UserDefaults.standard.set(true, forKey: self.hasAutoRestartedForAccessibilityKey)
-
-                        // Give user brief moment to see any UI feedback
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            self.restartApp()
-                        }
-                    }
-                    break // Stop polling after triggering restart
+                guard AXIsProcessTrusted() else { continue }
+                await MainActor.run {
+                    DebugLogger.shared.info("Accessibility permission granted", source: "ContentView")
+                    self.accessibilityEnabled = true
                 }
+
+                // The hotkey manager reinitializes asynchronously (see onChange of
+                // accessibilityEnabled): it waits before creating its event tap and retries.
+                // Only ask for a restart if the listener still isn't up after that window.
+                var healthy = false
+                for _ in 0..<Self.listenerStartChecks {
+                    try? await Task.sleep(nanoseconds: Self.listenerStartCheckInterval)
+                    healthy = await MainActor.run { self.hotkeyManager?.validateEventTapHealth() ?? false }
+                    if healthy { break }
+                }
+                await MainActor.run {
+                    self.hotkeyManagerInitialized = healthy
+                    guard !healthy else {
+                        self.accessibilityNeedsRestart = false
+                        return
+                    }
+                    self.accessibilityNeedsRestart = true
+                    // Offer once per grant; Home keeps a Restart Now button afterwards.
+                    if !UserDefaults.standard.bool(forKey: self.hasAutoRestartedForAccessibilityKey) {
+                        UserDefaults.standard.set(true, forKey: self.hasAutoRestartedForAccessibilityKey)
+                        self.showAccessibilityRestartAlert = true
+                    }
+                }
+                break
             }
         }
     }
@@ -2412,6 +2183,7 @@ struct ContentView: View {
                 if SettingsStore.shared.enableTranscriptionSounds {
                     TranscriptionSoundPlayer.shared.playStartSound()
                 }
+                self.beginOverlaySession()
                 Task {
                     await self.asr.start()
                 }
@@ -2436,6 +2208,7 @@ struct ContentView: View {
                     source: "ContentView"
                 )
                 TranscriptionSoundPlayer.shared.playStartSound()
+                self.beginOverlaySession()
                 Task {
                     await self.asr.start()
                 }
@@ -2469,6 +2242,7 @@ struct ContentView: View {
                 // Start recording immediately for the edit instruction
                 DebugLogger.shared.info("Starting voice recording for edit mode", source: "ContentView")
                 TranscriptionSoundPlayer.shared.playStartSound()
+                self.beginOverlaySession()
                 Task {
                     await self.asr.start()
                 }
@@ -2500,18 +2274,10 @@ struct ContentView: View {
                 handled = true
             }
 
-            // Reset recording mode flags
+            // Reset recording mode flags; a recording in progress ends as “Cancelled”.
             if self.activeRecordingMode != .none {
+                NotchOverlayManager.shared.present(.cancelled)
                 self.clearActiveRecordingMode()
-                handled = true
-            }
-
-            // Close mode views if open
-            if self.selectedSidebarItem == .commandMode || self.selectedSidebarItem == .rewriteMode {
-                DebugLogger.shared.debug("Cancel callback: closing mode view", source: "ContentView")
-                DispatchQueue.main.async {
-                    self.selectedSidebarItem = .welcome
-                }
                 handled = true
             }
 
@@ -2542,83 +2308,25 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Model Management Helpers
-
-    private func isCustomModel(_ model: String) -> Bool {
-        // Non-removable defaults are the provider's default models
-        return !ModelRepository.shared.defaultModels(for: self.currentProvider).contains(model)
-    }
-
-    /// Check if the current model has a reasoning config (either custom or auto-detected)
-    private func hasReasoningConfigForCurrentModel() -> Bool {
-        let providerKey = self.providerKey(for: self.selectedProviderID)
-
-        // Check for custom config first
-        if SettingsStore.shared.hasCustomReasoningConfig(forModel: self.selectedModel, provider: providerKey) {
-            if let config = SettingsStore.shared.getReasoningConfig(forModel: selectedModel, provider: providerKey) {
-                return config.isEnabled
-            }
-        }
-
-        // Check for auto-detected models
-        let modelLower = self.selectedModel.lowercased()
-        return modelLower.hasPrefix("gpt-5") || modelLower.contains("gpt-5.") ||
-            modelLower.hasPrefix("o1") || modelLower.hasPrefix("o3") ||
-            modelLower.contains("gpt-oss") || modelLower.hasPrefix("openai/") ||
-            (modelLower.contains("deepseek") && modelLower.contains("reasoner"))
-    }
-
-    private func removeModel(_ model: String) {
-        // Don't remove if it's currently selected
-        if self.selectedModel == model {
-            // Switch to first available model that's not the one being removed
-            if let firstOther = availableModels.first(where: { $0 != model }) {
-                self.selectedModel = firstOther
-            }
-        }
-
-        // Remove from current provider's model list
-        self.availableModels.removeAll { $0 == model }
-
-        // Update the stored models for this provider
-        let key = self.providerKey(for: self.selectedProviderID)
-        self.availableModelsByProvider[key] = self.availableModels
-        SettingsStore.shared.availableModelsByProvider = self.availableModelsByProvider
-
-        // If this is a saved custom provider, update its models array too
-        if let providerIndex = savedProviders.firstIndex(where: { $0.id == selectedProviderID }) {
-            let updatedProvider = SettingsStore.SavedProvider(
-                id: self.savedProviders[providerIndex].id,
-                name: self.savedProviders[providerIndex].name,
-                baseURL: self.savedProviders[providerIndex].baseURL,
-                models: self.availableModels
-            )
-            self.savedProviders[providerIndex] = updatedProvider
-            self.saveSavedProviders()
-        }
-
-        // Update selected model mapping for this provider
-        self.selectedModelByProvider[key] = self.selectedModel
-        SettingsStore.shared.selectedModelByProvider = self.selectedModelByProvider
-    }
-
     // Deprecated: hotkey persistence is handled via SettingsStore
 }
 
-// SidebarItem enum moved to top of file
+// MARK: - Card Appear Modifier
 
-// AudioDevice and AudioHardwareObserver moved to Services/AudioDeviceService.swift
-
-// MARK: - Card Animation Modifier
-
+/// Entrance for cards when a page first appears: a short rise and fade, staggered by
+/// `delay`. Honors Reduce Motion.
 struct CardAppearAnimation: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let delay: Double
     @Binding var appear: Bool
 
     func body(content: Content) -> some View {
         content
-            .scaleEffect(self.appear ? 1.0 : 0.96)
+            .offset(y: self.appear || self.reduceMotion ? 0 : Space.sm)
             .opacity(self.appear ? 1.0 : 0)
-            .animation(.spring(response: 0.8, dampingFraction: 0.75, blendDuration: 0.2).delay(self.delay), value: self.appear)
+            .animation(
+                Motion.resolved(Motion.enter, reduceMotion: self.reduceMotion).delay(self.delay),
+                value: self.appear
+            )
     }
 }

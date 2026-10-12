@@ -14,7 +14,6 @@ struct SayItApp: App {
     @StateObject private var menuBarManager = MenuBarManager()
     @StateObject private var appServices: AppServices
     @StateObject private var updateController = UpdateController.shared
-    @ObservedObject private var settings = SettingsStore.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
@@ -27,10 +26,11 @@ struct SayItApp: App {
             ContentView()
                 .environmentObject(self.menuBarManager)
                 .environmentObject(self.appServices)
-                .appTheme(AppTheme.dark(accent: self.settings.accentColor))
-                .preferredColorScheme(.dark)
+                .sayItTheme()
         }
         .defaultSize(width: 1000, height: 700)
-        .windowResizability(.contentSize)
+        // Content sets only the minimum size. `.contentSize` re-fitted the window to each
+        // page's ideal size, undoing the user's resize whenever they switched pages.
+        .windowResizability(.contentMinSize)
     }
 }

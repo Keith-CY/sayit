@@ -33,169 +33,106 @@ struct SearchableProviderPicker: View {
     @State private var searchText = ""
     @State private var isShowingPopover = false
 
-    private var allProviders: [(id: String, name: String, isBuiltIn: Bool)] {
-        var result: [(id: String, name: String, isBuiltIn: Bool)] = []
-
-        // Add built-in providers
-        for provider in self.builtInProviders {
-            result.append((id: provider.id, name: provider.name, isBuiltIn: true))
-        }
-
-        // Add saved providers
-        for provider in self.savedProviders {
-            result.append((id: provider.id, name: provider.name, isBuiltIn: false))
-        }
-
-        return result
+    private struct Option: Identifiable {
+        let id: String
+        let name: String
+        let isBuiltIn: Bool
     }
 
-    private var filteredProviders: [(id: String, name: String, isBuiltIn: Bool)] {
-        if self.searchText.isEmpty {
-            return self.allProviders
-        }
+    private var allProviders: [Option] {
+        self.builtInProviders.map { Option(id: $0.id, name: $0.name, isBuiltIn: true) } +
+            self.savedProviders.map { Option(id: $0.id, name: $0.name, isBuiltIn: false) }
+    }
+
+    private var filteredProviders: [Option] {
+        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return self.allProviders }
         return self.allProviders.filter {
-            $0.name.localizedCaseInsensitiveContains(self.searchText) ||
-                $0.id.localizedCaseInsensitiveContains(self.searchText)
+            $0.name.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query)
         }
     }
 
     private var selectedProviderName: String {
-        if let provider = allProviders.first(where: { $0.id == selectedProviderID }) {
-            return provider.name
-        }
-        return self.selectedProviderID.isEmpty ? "Select Provider" : self.selectedProviderID
+        self.allProviders.first(where: { $0.id == self.selectedProviderID })?.name ?? self.selectedProviderID
     }
 
     var body: some View {
         Button(action: { self.isShowingPopover.toggle() }) {
-            HStack(spacing: 8) {
-                Text(self.selectedProviderName)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 6)
-                Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 20)
-                    .background(
-                        Circle()
-                            .fill(self.theme.palette.cardBackground.opacity(0.7))
-                            .overlay(
-                                Circle()
-                                    .stroke(self.theme.palette.cardBorder.opacity(0.4), lineWidth: 1)
-                            )
-                    )
-            }
-            .frame(width: self.controlWidth, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .frame(height: self.controlHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(self.theme.palette.cardBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(self.theme.palette.cardBorder.opacity(0.35), lineWidth: 1)
-                    )
+            PickerFieldLabel(
+                text: self.selectedProviderName,
+                placeholder: "Choose a Provider",
+                width: self.controlWidth,
+                height: self.controlHeight ?? PickerLayout.defaultControlHeight
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Provider")
+        .accessibilityValue(self.selectedProviderName.isEmpty ? "None selected" : self.selectedProviderName)
+        .accessibilityHint("Shows the available providers")
         .popover(isPresented: self.$isShowingPopover, arrowEdge: .bottom) {
-            VStack(spacing: 0) {
-                // Search field
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search providers...", text: self.$searchText)
-                        .textFieldStyle(.plain)
-                }
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(self.theme.palette.contentBackground)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
-                        )
-                )
-
-                Divider()
-
-                // Provider list
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        // Built-in section
-                        let builtIns = self.filteredProviders.filter { $0.isBuiltIn }
-                        if !builtIns.isEmpty {
-                            Text("BUILT-IN")
-                                .font(.caption2)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.top, 8)
-                                .padding(.bottom, 4)
-
-                            ForEach(builtIns, id: \.id) { provider in
-                                self.providerRow(provider)
-                            }
-                        }
-
-                        // Saved/Custom section
-                        let saved = self.filteredProviders.filter { !$0.isBuiltIn }
-                        if !saved.isEmpty {
-                            if !builtIns.isEmpty {
-                                Divider()
-                                    .padding(.vertical, 4)
-                            }
-
-                            Text("CUSTOM")
-                                .font(.caption2)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.top, 4)
-                                .padding(.bottom, 4)
-
-                            ForEach(saved, id: \.id) { provider in
-                                self.providerRow(provider)
-                            }
-                        }
-
-                        if self.filteredProviders.isEmpty {
-                            Text("No providers match '\(self.searchText)'")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding()
-                        }
-                    }
-                }
-                .frame(maxHeight: 300)
-            }
-            .frame(width: 240)
+            self.popoverContent
         }
     }
 
-    private func providerRow(_ provider: (id: String, name: String, isBuiltIn: Bool)) -> some View {
-        Button(action: {
-            self.selectedProviderID = provider.id
-            self.searchText = ""
-            self.isShowingPopover = false
-        }) {
-            HStack {
-                Text(provider.name)
-                    .lineLimit(1)
-                Spacer()
-                if provider.id == self.selectedProviderID {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(self.theme.palette.accent)
-                }
+    private var popoverContent: some View {
+        let builtIns = self.filteredProviders.filter(\.isBuiltIn)
+        let saved = self.filteredProviders.filter { !$0.isBuiltIn }
+
+        return VStack(spacing: 0) {
+            PickerSearchField(placeholder: "Search providers", text: self.$searchText) {
+                if let first = self.filteredProviders.first { self.select(first.id) }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+
+            Divider()
+
+            if self.filteredProviders.isEmpty {
+                PickerEmptyState(
+                    symbol: "magnifyingglass",
+                    title: "No Matches",
+                    message: "No providers match “\(self.searchText)”."
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if !builtIns.isEmpty {
+                            self.sectionHeader("Built-in")
+                            ForEach(builtIns) { provider in
+                                PickerOptionRow(title: provider.name, isSelected: provider.id == self.selectedProviderID) {
+                                    self.select(provider.id)
+                                }
+                            }
+                        }
+                        if !saved.isEmpty {
+                            self.sectionHeader("Custom")
+                            ForEach(saved) { provider in
+                                PickerOptionRow(title: provider.name, isSelected: provider.id == self.selectedProviderID) {
+                                    self.select(provider.id)
+                                }
+                            }
+                        }
+                    }
+                    .padding(Space.xs)
+                }
+                .frame(maxHeight: PickerLayout.popoverListMaxHeight)
+            }
         }
-        .buttonStyle(.plain)
-        .background(provider.id == self.selectedProviderID ? self.theme.palette.accent.opacity(0.15) : Color.clear)
+        .frame(width: PickerLayout.popoverWidth)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(AppFont.captionEmphasis)
+            .foregroundStyle(self.theme.palette.tertiaryText)
+            .padding(.horizontal, Space.sm + Space.xxs)
+            .padding(.top, Space.sm)
+            .padding(.bottom, Space.xs)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func select(_ providerID: String) {
+        self.selectedProviderID = providerID
+        self.searchText = ""
+        self.isShowingPopover = false
     }
 }
 
@@ -210,4 +147,5 @@ struct SearchableProviderPicker: View {
         selectedProviderID: .constant("openai")
     )
     .padding()
+    .sayItTheme()
 }

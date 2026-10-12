@@ -201,6 +201,7 @@ RELEASE_NOTES_*
 docs/*
 !docs/README.md
 !docs/GITHUB_UPDATES.md
+!docs/design/
 
 
 .agent/

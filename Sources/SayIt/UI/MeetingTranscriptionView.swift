@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// "File Transcription": transcribe an audio or video file with the active speech model.
 struct MeetingTranscriptionView: View {
     let asrService: ASRService
     @StateObject private var transcriptionService: MeetingTranscriptionService
@@ -12,15 +13,29 @@ struct MeetingTranscriptionView: View {
         _transcriptionService = StateObject(wrappedValue: MeetingTranscriptionService(asrService: asrService))
     }
 
+    /// Previews and snapshot tests: inject a service in a specific state.
+    init(asrService: ASRService, service: MeetingTranscriptionService, selectedFileURL: URL?) {
+        self.asrService = asrService
+        _transcriptionService = StateObject(wrappedValue: service)
+        _selectedFileURL = State(initialValue: selectedFileURL)
+    }
+
     @State private var showingFilePicker = false
     @State private var showingExportDialog = false
     @State private var exportFormat: ExportFormat = .text
-    @State private var showingCopyConfirmation = false
     @State private var isDropTargeted = false
-    @State private var dropErrorMessage: String?
+    @State private var notice: Notice?
+    @State private var transcriptionTask: Task<Void, Never>?
+
+    /// A problem that isn't owned by the transcription service (file picking, drop, export).
+    private struct Notice: Equatable {
+        let kind: ActivityUI.BannerKind
+        let title: String
+        let message: String?
+    }
 
     enum ExportFormat: String, CaseIterable {
-        case text = "Text (.txt)"
+        case text = "Plain Text (.txt)"
         case json = "JSON (.json)"
 
         var fileExtension: String {
@@ -31,290 +46,225 @@ struct MeetingTranscriptionView: View {
         }
     }
 
+    private static let supportedFileExtensions = ["wav", "mp3", "m4a", "aac", "flac", "aiff", "caf", "mp4", "mov"]
+    private static let supportedFormatsText = "WAV, MP3, M4A, AAC, FLAC, AIFF, CAF, MP4 or MOV"
+    private static let transcriptMaxHeight: CGFloat = 360
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            VStack(spacing: 8) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 48))
-                    .foregroundStyle(Color.fluidGreen.gradient)
-
-                Text("Meeting Transcription")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-
-                Text("Upload audio or video files to transcribe")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.top, 40)
-            .padding(.bottom, 30)
-
-            // Main Content Area
-            ScrollView {
-                VStack(spacing: 24) {
-                    // File Selection Card
-                    self.fileSelectionCard
-
-                    // Progress Card (only show when transcribing)
-                    if self.transcriptionService.isTranscribing {
-                        self.progressCard
-                    }
-
-                    // Results Card (only show when we have results)
-                    if let result = transcriptionService.result {
-                        self.resultsCard(result: result)
-                    }
-
-                    // Error Card (only show when we have an error)
-                    if let error = transcriptionService.error {
-                        self.errorCard(error: error)
-                    }
-
-                    // Drop error (unsupported file type)
-                    if let message = self.dropErrorMessage {
-                        self.dropErrorCard(message: message)
-                    }
-                }
-                .padding(24)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(self.theme.palette.windowBackground)
-        .overlay(alignment: .topTrailing) {
-            if self.showingCopyConfirmation {
-                Text("Copied!")
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.fluidGreen.opacity(0.9))
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
-                    .padding()
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-    }
-
-    // MARK: - File Selection Card
-
-    private var fileSelectionCard: some View {
-        VStack(spacing: 16) {
-            if let fileURL = selectedFileURL {
-                // Show selected file
-                HStack {
-                    Image(systemName: "doc.fill")
-                        .font(.title2)
-                        .foregroundColor(Color.fluidGreen)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(fileURL.lastPathComponent)
-                            .font(.headline)
-
-                        Text(self.formatFileSize(fileURL: fileURL))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    Spacer()
-
-                    Button(action: {
-                        self.selectedFileURL = nil
-                        self.transcriptionService.reset()
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(self.theme.palette.cardBackground)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
-                        )
-                )
-
-                // Transcribe Button
-                Button(action: {
-                    Task {
-                        await self.transcribeFile()
-                    }
-                }) {
-                    HStack {
-                        Image(systemName: "waveform")
-                        Text("Transcribe")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(self.transcriptionService.isTranscribing)
-
+        ActivityUI.Page(
+            "File Transcription",
+            subtitle: "Turn a recording or video into text with your speech model."
+        ) {
+            if let fileURL = self.selectedFileURL {
+                self.fileCard(fileURL)
             } else {
-                // File picker button – whole area is tappable; supports drag-and-drop
-                Button(action: {
-                    self.showingFilePicker = true
-                }) {
-                    VStack(spacing: 12) {
-                        Image(systemName: "arrow.up.doc.fill")
-                            .font(.system(size: 32))
+                self.dropZone
+            }
 
-                        Text("Choose Audio or Video File")
-                            .font(.headline)
+            if let notice = self.notice {
+                ActivityUI.Banner(notice.kind, title: notice.title, message: notice.message) {
+                    Button("Dismiss") { withMotion(Motion.exit) { self.notice = nil } }
+                        .buttonStyle(.sayIt(.quiet, size: .small))
+                }
+                .motionTransition()
+            }
 
-                        Text("Supported: WAV, MP3, M4A, MP4, MOV, and more")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+            if let error = self.transcriptionService.error {
+                ActivityUI.Banner(.error, title: "Couldn’t transcribe this file", message: error) {
+                    if self.selectedFileURL != nil {
+                        Button("Try Again", action: self.startTranscription)
+                            .buttonStyle(.sayIt(.quiet, size: .small))
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(32)
-                    .contentShape(Rectangle())
+                    Button("Choose Another File…") {
+                        self.transcriptionService.reset()
+                        self.showingFilePicker = true
+                    }
+                    .buttonStyle(.sayIt(.secondary, size: .small))
                 }
-                .buttonStyle(.plain)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(self.theme.palette.cardBackground)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
-                        )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8]))
-                        .foregroundColor(Color.fluidGreen.opacity(self.isDropTargeted ? 0.7 : 0.3))
-                )
-                .onDrop(of: [.fileURL], isTargeted: self.$isDropTargeted) { providers in
-                    self.handleDrop(providers: providers)
+                .motionTransition()
+            } else if self.transcriptionService.wasCancelled {
+                ActivityUI.Banner(.info, title: "Transcription cancelled") {
+                    if self.selectedFileURL != nil {
+                        Button("Transcribe Again", action: self.startTranscription)
+                            .buttonStyle(.sayIt(.secondary, size: .small))
+                    }
                 }
+                .motionTransition()
+            }
+
+            if let result = self.transcriptionService.result {
+                self.resultCard(result)
+                    .motionTransition()
             }
         }
+        .motion(Motion.state, value: self.transcriptionService.isTranscribing)
+        .motion(Motion.state, value: self.transcriptionService.result?.id)
         .fileImporter(
             isPresented: self.$showingFilePicker,
-            allowedContentTypes: [
-                .audio,
-                .movie,
-                .mpeg4Movie,
-                UTType(filenameExtension: "wav") ?? .audio,
-                UTType(filenameExtension: "mp3") ?? .audio,
-                UTType(filenameExtension: "m4a") ?? .audio,
-            ],
+            allowedContentTypes: [.audio, .movie, .mpeg4Movie],
             allowsMultipleSelection: false
         ) { result in
             switch result {
             case let .success(urls):
                 if let url = urls.first {
-                    self.selectedFileURL = url
-                    self.transcriptionService.reset()
+                    self.select(url)
                 }
             case let .failure(error):
                 DebugLogger.shared.error("File picker error: \(error)", source: "MeetingTranscriptionView")
+                self.notice = Notice(kind: .error, title: "Couldn’t open the file", message: error.localizedDescription)
             }
+        }
+        .onDisappear {
+            self.transcriptionTask?.cancel()
         }
     }
 
-    // MARK: - Progress Card
+    // MARK: - Drop Zone
 
-    private var progressCard: some View {
-        VStack(spacing: 16) {
-            ProgressView(value: self.transcriptionService.progress)
-                .progressViewStyle(.linear)
-
-            HStack {
-                ProgressView()
-                    .controlSize(.small)
-
-                Text(self.transcriptionService.currentStatus)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+    private var dropZone: some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+        return VStack(spacing: Space.md) {
+            Image(systemName: "arrow.down.doc")
+                .font(AppFont.iconLarge)
+                .foregroundStyle(self.isDropTargeted ? self.theme.palette.accentForeground : self.theme.palette.secondaryText)
+                .frame(width: Space.xxxl, height: Space.xxxl)
+                .background(Circle().fill(self.isDropTargeted ? self.theme.palette.accentSubtle : self.theme.palette.surfaceSunken))
+                .accessibilityHidden(true)
+            Text("Drop an Audio or Video File Here")
+                .font(AppFont.bodyEmphasis)
+                .foregroundStyle(self.theme.palette.primaryText)
+            Button("Choose File…") {
+                self.showingFilePicker = true
             }
+            .buttonStyle(.sayItSecondary)
+            Text(Self.supportedFormatsText)
+                .font(AppFont.caption)
+                .foregroundStyle(self.theme.palette.secondaryText)
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(self.theme.palette.cardBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
-                )
-        )
-    }
-
-    // MARK: - Results Card
-
-    private func resultsCard(result: TranscriptionResult) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Header with stats
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Transcription Complete")
-                        .font(.headline)
-
-                    HStack(spacing: 16) {
-                        Label("\(String(format: "%.1f", result.duration))s", systemImage: "clock")
-                        Label("\(String(format: "%.0f%%", result.confidence * 100))", systemImage: "checkmark.circle")
-                        Label(
-                            "\(String(format: "%.1f", result.duration / result.processingTime))x",
-                            systemImage: "speedometer"
-                        )
-                    }
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                // Action buttons
-                HStack(spacing: 8) {
-                    Button(action: {
-                        self.copyToClipboard(result.text)
-                    }) {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .help("Copy to clipboard")
-
-                    Button(action: {
-                        self.showingExportDialog = true
-                    }) {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .help("Export transcription")
-                }
-                .buttonStyle(.borderless)
-            }
-
-            Divider()
-
-            // Transcription text
-            ScrollView {
-                Text(result.text)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-            }
-            .frame(maxHeight: 300)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(self.theme.palette.contentBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
-                    )
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Space.xxxl)
+        .background(shape.fill(self.isDropTargeted ? self.theme.palette.accentSubtle : self.theme.palette.surface))
+        .overlay(
+            shape.strokeBorder(
+                self.isDropTargeted ? self.theme.palette.accent : self.theme.palette.hairline,
+                style: StrokeStyle(lineWidth: 1.5, dash: [Space.sm, Space.xs + Space.xxs])
             )
-        }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(self.theme.palette.cardBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
-                )
         )
+        .motion(Motion.snappy, value: self.isDropTargeted)
+        .onDrop(of: [.fileURL], isTargeted: self.$isDropTargeted) { providers in
+            self.handleDrop(providers: providers)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Drop zone for audio or video files")
+    }
+
+    // MARK: - File Card
+
+    private func fileCard(_ fileURL: URL) -> some View {
+        let service = self.transcriptionService
+        return ThemedCard(style: .prominent) {
+            VStack(alignment: .leading, spacing: Space.lg) {
+                HStack(spacing: Space.md) {
+                    Image(systemName: "waveform")
+                        .font(AppFont.icon)
+                        .foregroundStyle(self.theme.palette.accentForeground)
+                        .frame(width: Space.xxxl - Space.sm, height: Space.xxxl - Space.sm)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                .fill(self.theme.palette.accentSubtle)
+                        )
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: Space.xxs) {
+                        Text(fileURL.lastPathComponent)
+                            .font(AppFont.rowTitle)
+                            .foregroundStyle(self.theme.palette.primaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(Self.fileSize(of: fileURL))
+                            .font(AppFont.caption)
+                            .foregroundStyle(self.theme.palette.secondaryText)
+                    }
+                    Spacer(minLength: Space.md)
+                    IconButton("Remove File", systemName: "xmark") {
+                        withMotion(Motion.exit) {
+                            self.selectedFileURL = nil
+                            self.transcriptionService.reset()
+                        }
+                    }
+                    .disabled(service.isTranscribing)
+                }
+
+                if service.isTranscribing {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        ProgressView(value: service.progress)
+                            .progressViewStyle(.linear)
+                            .tint(self.theme.palette.accent)
+                            .accessibilityLabel("Transcription progress")
+                        HStack {
+                            Text(service.currentStatus.isEmpty ? "Starting…" : service.currentStatus)
+                                .font(AppFont.caption)
+                                .foregroundStyle(self.theme.palette.secondaryText)
+                                .contentTransition(.opacity)
+                            Spacer()
+                            Button("Cancel", action: self.cancelTranscription)
+                                .buttonStyle(.sayIt(.secondary, size: .small))
+                                .keyboardShortcut(.cancelAction)
+                        }
+                    }
+                    .motionTransition()
+                } else {
+                    HStack {
+                        Spacer()
+                        Button(service.result == nil ? "Transcribe" : "Transcribe Again", action: self.startTranscription)
+                            .buttonStyle(SayItButtonStyle(role: service.result == nil ? .primary : .secondary))
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Result
+
+    private func resultCard(_ result: TranscriptionResult) -> some View {
+        let isEmpty = result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return ThemedCard {
+            VStack(alignment: .leading, spacing: Space.lg) {
+                ActivityUI.SectionTitle("Transcript") {
+                    if !isEmpty {
+                        ActivityUI.CopyButton(text: result.text)
+                        Menu("Export") {
+                            ForEach(ExportFormat.allCases, id: \.self) { format in
+                                Button(format.rawValue) {
+                                    self.exportFormat = format
+                                    self.showingExportDialog = true
+                                }
+                            }
+                        }
+                        .menuStyle(.button)
+                        .buttonStyle(.sayIt(.secondary, size: .small))
+                        .fixedSize()
+                    }
+                }
+
+                Text(Self.summary(of: result))
+                    .font(AppFont.caption)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+
+                if isEmpty {
+                    ActivityUI.EmptyState(
+                        systemImage: "waveform.slash",
+                        title: "No Speech Found",
+                        message: "SayIt didn’t hear any speech in this file. Check that it has an audio track with someone talking."
+                    )
+                } else {
+                    ScrollView {
+                        ActivityUI.TranscriptBlock(text: result.text)
+                    }
+                    .frame(maxHeight: Self.transcriptMaxHeight)
+                }
+            }
+        }
         .fileExporter(
             isPresented: self.$showingExportDialog,
             document: TranscriptionDocument(
@@ -323,78 +273,48 @@ struct MeetingTranscriptionView: View {
                 service: self.transcriptionService
             ),
             contentType: self.exportFormat == .text ? .plainText : .json,
-            defaultFilename: "\(result.fileName)_transcript.\(self.exportFormat.fileExtension)"
-        ) { result in
-            switch result {
+            defaultFilename: "\((result.fileName as NSString).deletingPathExtension) transcript.\(self.exportFormat.fileExtension)"
+        ) { exportResult in
+            switch exportResult {
             case .success:
                 DebugLogger.shared.info("File exported successfully", source: "MeetingTranscriptionView")
             case let .failure(error):
                 DebugLogger.shared.error("Export failed: \(error)", source: "MeetingTranscriptionView")
+                self.notice = Notice(kind: .error, title: "Export failed", message: error.localizedDescription)
             }
         }
     }
 
-    // MARK: - Error Card
+    // MARK: - Actions
 
-    private func errorCard(error: String) -> some View {
-        HStack {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
-
-            Text(error)
-                .font(.subheadline)
-
-            Spacer()
-
-            Button("Dismiss") {
-                self.transcriptionService.reset()
-            }
-            .buttonStyle(.borderless)
+    private func select(_ url: URL) {
+        withMotion(Motion.state) {
+            self.selectedFileURL = url
+            self.notice = nil
+            self.transcriptionService.reset()
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.red.opacity(0.12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.red.opacity(0.4), lineWidth: 1)
-                )
-        )
     }
 
-    // MARK: - Drop Error Card
-
-    private func dropErrorCard(message: String) -> some View {
-        HStack {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
-
-            Text(message)
-                .font(.subheadline)
-
-            Spacer()
-
-            Button("Dismiss") {
-                self.dropErrorMessage = nil
+    private func startTranscription() {
+        guard let fileURL = self.selectedFileURL else { return }
+        self.notice = nil
+        self.transcriptionTask?.cancel()
+        self.transcriptionTask = Task {
+            do {
+                _ = try await self.transcriptionService.transcribeFile(fileURL)
+            } catch is CancellationError {
+                // The service shows the cancelled state.
+            } catch {
+                // The service exposes the error; it is shown in the banner.
+                DebugLogger.shared.error("Transcription error: \(error)", source: "MeetingTranscriptionView")
             }
-            .buttonStyle(.borderless)
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.red.opacity(0.12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.red.opacity(0.4), lineWidth: 1)
-                )
-        )
     }
 
-    // MARK: - Helper Functions
-
-    private static let supportedFileExtensions = ["wav", "mp3", "m4a", "aac", "flac", "aiff", "caf", "mp4", "mov"]
-
-    private static let dropErrorCopy = "Accepted file types: WAV, MP3, M4A, MP4, MOV, and more."
+    private func cancelTranscription() {
+        self.transcriptionTask?.cancel()
+        self.transcriptionService.cancel()
+    }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
@@ -402,59 +322,54 @@ struct MeetingTranscriptionView: View {
             let url: URL? = (item as? URL) ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
             guard let url = url else { return }
             let ext = url.pathExtension.lowercased()
-            guard Self.supportedFileExtensions.contains(ext) else {
-                DispatchQueue.main.async {
-                    self.dropErrorMessage = Self.dropErrorCopy
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        self.dropErrorMessage = nil
-                    }
-                }
-                return
-            }
             DispatchQueue.main.async {
-                self.selectedFileURL = url
-                self.transcriptionService.reset()
-                self.dropErrorMessage = nil
+                guard Self.supportedFileExtensions.contains(ext) else {
+                    withMotion(Motion.enter) {
+                        self.notice = Notice(
+                            kind: .warning,
+                            title: "That file type isn’t supported",
+                            message: "Use \(Self.supportedFormatsText)."
+                        )
+                    }
+                    return
+                }
+                self.select(url)
             }
         }
         return true
     }
 
-    private func transcribeFile() async {
-        guard let fileURL = selectedFileURL else { return }
+    // MARK: - Formatting
 
-        do {
-            _ = try await self.transcriptionService.transcribeFile(fileURL)
-        } catch {
-            DebugLogger.shared.error("Transcription error: \(error)", source: "MeetingTranscriptionView")
-        }
-    }
-
-    private func formatFileSize(fileURL: URL) -> String {
+    private static func fileSize(of fileURL: URL) -> String {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
               let fileSize = attributes[.size] as? Int64
         else {
-            return "Unknown size"
+            return "Size unknown"
         }
-
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: fileSize)
+        return CopyFormat.bytes(fileSize)
     }
 
-    private func copyToClipboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-
-        withAnimation {
-            self.showingCopyConfirmation = true
+    static func summary(of result: TranscriptionResult) -> String {
+        var parts: [String] = []
+        if result.duration > 0 {
+            let pattern: Duration.TimeFormatStyle.Pattern = result.duration >= 3600 ? .hourMinuteSecond : .minuteSecond
+            parts.append("\(Duration.seconds(result.duration).formatted(.time(pattern: pattern))) of audio")
         }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            withAnimation {
-                self.showingCopyConfirmation = false
+        if result.processingTime > 0 {
+            let seconds = max(1, Int(result.processingTime.rounded()))
+            var speed = "transcribed in \(CopyFormat.count(seconds, "second"))"
+            if result.duration > 0 {
+                let factor = result.duration / result.processingTime
+                speed += " (\(factor.formatted(.number.precision(.fractionLength(0...1))))× real time)"
             }
+            parts.append(speed)
         }
+        if result.confidence > 0 {
+            parts.append("confidence \(Int((result.confidence * 100).rounded()))%")
+        }
+        let text = parts.joined(separator: " · ")
+        return text.prefix(1).uppercased() + text.dropFirst()
     }
 }
 
@@ -505,4 +420,5 @@ struct TranscriptionDocument: FileDocument {
 #Preview {
     MeetingTranscriptionView(asrService: ASRService())
         .frame(width: 700, height: 800)
+        .sayItTheme()
 }

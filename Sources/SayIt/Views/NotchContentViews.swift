@@ -20,6 +20,27 @@ class NotchContentState: ObservableObject {
     @Published var mode: OverlayMode = .dictation
     @Published var promptPickerMode: SettingsStore.PromptMode = .dictate
     @Published var isProcessing: Bool = false // AI processing state
+    /// Single source of truth for what the overlay is communicating.
+    @Published var phase: OverlayPhase = .idle
+    /// When `phase` last changed; used to keep terminal phases on screen long enough to read.
+    private(set) var phaseChangedAt = Date.distantPast
+    /// Bumped on every cancel. Pipeline work captures it when it starts and must not
+    /// deliver text if it changed (the user pressed Esc while SayIt was still working).
+    private(set) var cancellationCount: UInt64 = 0
+
+    func setPhase(_ phase: OverlayPhase) {
+        if phase == .cancelled {
+            self.cancellationCount &+= 1
+        }
+        guard phase != self.phase else { return }
+        self.phase = phase
+        self.phaseChangedAt = Date()
+        if phase.isWorking {
+            self.isProcessing = true
+        } else if phase.isTerminal || phase == .idle || phase == .listening {
+            self.isProcessing = false
+        }
+    }
 
     // Icon of the target app (where text will be typed)
     @Published var targetAppIcon: NSImage?
@@ -55,7 +76,7 @@ class NotchContentState: ObservableObject {
         enum Role: Equatable {
             case user
             case assistant
-            case status // For "Running...", "Checking...", etc.
+            case status // For "Running…", "Checking…", etc.
         }
     }
 
@@ -119,11 +140,6 @@ class NotchContentState: ObservableObject {
     // MARK: - Recording State for Expanded View
 
     @Published var isRecordingInExpandedMode: Bool = false
-    @Published var expandedModeAudioLevel: CGFloat = 0 // Audio level for waveform in expanded mode
-
-    // MARK: - Bottom Overlay Audio Level
-
-    @Published var bottomOverlayAudioLevel: CGFloat = 0 // Audio level for bottom overlay waveform
 
     /// Called when the user requests a live mode switch from the prompt picker tabs.
     var onPromptModeSwitchRequested: ((SettingsStore.PromptMode) -> Void)?
@@ -137,21 +153,21 @@ class NotchContentState: ObservableObject {
     var onUndoLastAIRequested: (() -> Void)?
     /// Called when the user requests toggling dictation AI enhancement.
     var onToggleAIProcessingRequested: (() -> Void)?
-    /// Called when the user requests opening Preferences.
+    /// Called when the user requests opening Settings.
     var onOpenPreferencesRequested: (() -> Void)?
 
-    /// Set recording state (for waveform visibility in expanded view)
+    /// Set recording state (for meter visibility in the expanded command view)
     func setRecordingInExpandedMode(_ recording: Bool) {
         self.isRecordingInExpandedMode = recording
         if !recording {
-            self.expandedModeAudioLevel = 0
+            OverlayAudioMeter.shared.set(0)
         }
     }
 
-    /// Update audio level for expanded mode waveform
+    /// Update audio level for the expanded command view meter
     func updateExpandedModeAudioLevel(_ level: CGFloat) {
         guard self.isRecordingInExpandedMode else { return }
-        self.expandedModeAudioLevel = level
+        OverlayAudioMeter.shared.set(level)
     }
 
     // MARK: - Command Output Methods
@@ -206,503 +222,160 @@ class NotchContentState: ObservableObject {
     }
 }
 
-// MARK: - Shared Mode Color Helper
+// MARK: - Notch Overlay (expanded)
 
-extension OverlayMode {
-    /// Mode-specific color for notch UI elements
-    var notchColor: Color {
-        switch self {
-        case .dictation:
-            return Color.white.opacity(0.85)
-        case .edit:
-            return Color(red: 0.4, green: 0.6, blue: 1.0) // Blue (Edit)
-        case .rewrite:
-            return Color(red: 0.45, green: 0.55, blue: 1.0) // Lighter blue
-        case .write:
-            return Color(red: 0.4, green: 0.6, blue: 1.0) // Blue
-        case .command:
-            return Color(red: 1.0, green: 0.35, blue: 0.35) // Red
-        }
-    }
-}
-
-// MARK: - Shimmer Text (Cursor-style thinking animation)
-
-struct ShimmerText: View {
-    let text: String
-    let color: Color
-    var font: Font = .system(size: 9, weight: .medium)
-
-    /// Seconds per shimmer sweep.
-    /// Lower is faster.
-    private let periodSeconds: Double = 0.85
-    private let bandHalfWidth: CGFloat = 0.32
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            let progress = (t / self.periodSeconds).truncatingRemainder(dividingBy: 1.0)
-            // Sweep from slightly before to slightly after to avoid hard edges.
-            let centerX = CGFloat(-0.25 + progress * 1.5) // -0.25 -> 1.25
-
-            Text(self.text)
-                .font(self.font)
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [
-                            self.color.opacity(0.35),
-                            self.color.opacity(0.35),
-                            self.color.opacity(1.0),
-                            self.color.opacity(0.35),
-                            self.color.opacity(0.35),
-                        ],
-                        startPoint: UnitPoint(x: centerX - self.bandHalfWidth, y: 0.5),
-                        endPoint: UnitPoint(x: centerX + self.bandHalfWidth, y: 0.5)
-                    )
-                )
-        }
-    }
-}
-
-// MARK: - Expanded View (Main Content) - Minimal Design
-
+/// Root of the notch overlay. Applies the always-dark overlay theme.
 struct NotchExpandedView: View {
-    let audioPublisher: AnyPublisher<CGFloat, Never>
+    var body: some View {
+        NotchOverlayContent()
+            .sayItOverlayTheme()
+    }
+}
+
+/// Notch layout: indicator + status + cancel on top, transcript in the middle, prompt
+/// selector at the bottom so its menu opens outside the notch instead of over the words.
+struct NotchOverlayContent: View {
     @ObservedObject private var contentState = NotchContentState.shared
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.theme) private var theme
-    @State private var showPromptHoverMenu = false
-    @State private var promptHoverWorkItem: DispatchWorkItem?
+    @State private var promptChipFrame: CGRect = .zero
+    @State private var promptChipWindow: NSWindow?
 
-    private var modeColor: Color {
-        self.contentState.mode.notchColor
+    private static let contentWidth: CGFloat = 288
+    private static let appIconSize: CGFloat = 16
+    private static let transcriptLines = 2
+
+    private var mode: OverlayMode {
+        self.contentState.mode.normalized
     }
 
-    private var modeLabel: String {
-        switch self.contentState.mode {
-        case .dictation: return "Dictate"
-        case .edit, .rewrite, .write: return "Edit"
-        case .command: return "Command"
-        }
+    private var phase: OverlayPhase {
+        self.contentState.phase
     }
 
-    private var processingLabel: String {
-        switch self.contentState.mode {
-        case .dictation: return "Refining..."
-        case .edit, .rewrite, .write: return "Thinking..."
-        case .command: return "Working..."
-        }
-    }
-
-    // ContentView writes transient status strings into transcriptionText while processing
-    // (e.g. "Transcribing...", "Refining..."). Prefer that when present.
-    private var processingStatusText: String {
-        let t = self.contentState.transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? self.processingLabel : t
-    }
-
-    private var hasTranscription: Bool {
-        !self.contentState.transcriptionText.isEmpty
-    }
-
-    // Check if there's command history that can be expanded
     private var canExpandCommandHistory: Bool {
-        self.contentState.mode == .command && !self.contentState.commandConversationHistory.isEmpty
-    }
-
-    private var normalizedOverlayMode: OverlayMode {
-        switch self.contentState.mode {
-        case .dictation:
-            return .dictation
-        case .edit, .write, .rewrite:
-            return .edit
-        case .command:
-            return .command
-        }
-    }
-
-    private var activePromptMode: SettingsStore.PromptMode? {
-        switch self.normalizedOverlayMode {
-        case .dictation:
-            return .dictate
-        case .edit:
-            return .edit
-        case .command, .write, .rewrite:
-            return nil
-        }
-    }
-
-    private var isPromptSelectableMode: Bool {
-        self.activePromptMode != nil
+        self.mode == .command && !self.contentState.commandConversationHistory.isEmpty
     }
 
     private var selectedPromptLabel: String {
-        guard let activePromptMode else { return "N/A" }
-        if let profile = self.settings.selectedPromptProfile(for: activePromptMode) {
+        guard let promptMode = self.mode.promptMode else { return "" }
+        if let profile = self.settings.selectedPromptProfile(for: promptMode) {
             let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
             return name.isEmpty ? "Untitled" : name
         }
         return "Default"
     }
 
-    private var previewMaxHeight: CGFloat {
-        60
-    }
-
-    private var previewMaxWidth: CGFloat {
-        180
-    }
-
-    private func handlePromptHover(_ hovering: Bool) {
-        guard self.isPromptSelectableMode, !self.contentState.isProcessing else {
-            self.showPromptHoverMenu = false
-            return
-        }
-        self.promptHoverWorkItem?.cancel()
-        let task = DispatchWorkItem {
-            self.showPromptHoverMenu = hovering
-        }
-        self.promptHoverWorkItem = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + (hovering ? 0.05 : 0.15), execute: task)
-    }
-
-    private func promptMenuContent() -> some View {
-        let promptMode = self.activePromptMode ?? .dictate
-
-        return VStack(alignment: .leading, spacing: 0) {
-            Button(action: {
-                self.settings.setSelectedPromptID(nil, for: promptMode)
-                let pid = NotchContentState.shared.recordingTargetPID
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    if let pid { _ = TypingService.activateApp(pid: pid) }
-                }
-                self.showPromptHoverMenu = false
-            }) {
-                HStack {
-                    Text("Default")
-                    Spacer()
-                    if self.settings.selectedPromptID(for: promptMode) == nil {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 4)
-
-            if !self.settings.promptProfiles(for: promptMode).isEmpty {
-                Divider()
-                    .padding(.vertical, 4)
-
-                ForEach(self.settings.promptProfiles(for: promptMode)) { profile in
-                    Button(action: {
-                        self.settings.setSelectedPromptID(profile.id, for: promptMode)
-                        let pid = NotchContentState.shared.recordingTargetPID
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            if let pid { _ = TypingService.activateApp(pid: pid) }
-                        }
-                        self.showPromptHoverMenu = false
-                    }) {
-                        HStack {
-                            Text(profile.name.isEmpty ? "Untitled" : profile.name)
-                            Spacer()
-                            if self.settings.selectedPromptID(for: promptMode) == profile.id {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 10, weight: .semibold))
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 4)
-                }
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(Color.black)
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-        .onHover { hovering in
-            self.handlePromptHover(hovering)
-        }
-    }
-
     var body: some View {
-        VStack(spacing: 4) {
-            // Visualization + Mode label row
-            HStack(spacing: 6) {
-                // Target app icon (the app where text will be typed)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
                 if let appIcon = self.contentState.targetAppIcon {
                     Image(nsImage: appIcon)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 16, height: 16)
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .frame(width: Self.appIconSize, height: Self.appIconSize)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.xs, style: .continuous))
+                        .accessibilityHidden(true)
                 }
 
-                NotchWaveformView(
-                    audioPublisher: self.audioPublisher,
-                    color: self.modeColor
-                )
-                .frame(width: 80, height: 22)
+                OverlayIndicator(phase: self.phase, mode: self.mode, meterStyle: .notch)
 
-                // Mode label - shimmer effect when processing
-                if self.contentState.isProcessing {
-                    ShimmerText(text: self.processingStatusText, color: self.modeColor)
-                } else {
-                    Text(self.modeLabel)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(self.modeColor)
-                        .opacity(0.9)
-                        .onHover { hovering in
-                            self.handlePromptHover(hovering)
-                        }
-                }
+                OverlayStatusLabel(phase: self.phase, mode: self.mode, showsModeGlyph: false)
+                    .layoutPriority(1)
+
+                Spacer(minLength: Space.xs)
+
+                OverlayCancelControl(size: 20)
             }
 
-            // Prompt selector
-            if !self.contentState.isProcessing {
-                ZStack(alignment: .top) {
-                    HStack(spacing: 6) {
-                        Text("Prompt:")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.5))
-                        Text(self.selectedPromptLabel)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.75))
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.45))
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.00))
-                    .cornerRadius(6)
-                    .opacity(self.isPromptSelectableMode ? 1.0 : 0.6)
-                    .onHover { hovering in
-                        self.handlePromptHover(hovering)
-                    }
+            OverlayTranscriptText(
+                text: self.contentState.cachedPreviewText,
+                font: AppFont.Overlay.transcriptCompact,
+                lines: Self.transcriptLines,
+                isDimmed: self.phase.isWorking,
+                placeholder: self.phase.transcriptPlaceholder
+            )
 
-                    if self.showPromptHoverMenu {
-                        self.promptMenuContent()
-                            .padding(.top, 26)
-                            .transition(.opacity)
-                            .zIndex(10)
-                    }
-                }
-                .frame(maxWidth: 180, alignment: .top)
-                .transition(.opacity)
-            }
-
-            // Transcription preview (wrapped, fixed width)
-            if self.hasTranscription && !self.contentState.isProcessing {
-                let previewText = self.contentState.cachedPreviewText
-                if !previewText.isEmpty {
-                    ScrollViewReader { proxy in
-                        ScrollView(.vertical, showsIndicators: false) {
-                            Text(previewText)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.75))
-                                .multilineTextAlignment(.leading)
-                                .lineLimit(nil)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Color.clear.frame(height: 1).id("bottom")
-                        }
-                        .frame(width: self.previewMaxWidth, alignment: .leading)
-                        .frame(maxHeight: self.previewMaxHeight, alignment: .leading)
-                        .clipped()
-                        .onAppear {
-                            DispatchQueue.main.async {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
-                        .onChange(of: previewText) { _, _ in
-                            DispatchQueue.main.async {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                }
-            }
+            self.footer
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(Color.black) // Must be pure black to blend with macOS notch
-        .contentShape(Rectangle()) // Make entire area tappable
-        .onTapGesture {
-            // If in command mode with history, clicking expands the conversation
-            if self.canExpandCommandHistory {
-                NotchOverlayManager.shared.onNotchClicked?()
-            }
-        }
-        .onChange(of: self.contentState.mode) { _, _ in
-            if !self.isPromptSelectableMode {
-                self.showPromptHoverMenu = false
-            }
-            switch self.contentState.mode {
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm)
+        .frame(width: Self.contentWidth, alignment: .leading)
+        .background(self.theme.overlay.surface) // Pure black to blend with the hardware notch
+        .onChange(of: self.contentState.mode) { _, newMode in
+            OverlayMenuController.shared.hide()
+            switch newMode {
             case .dictation: self.contentState.promptPickerMode = .dictate
             case .edit, .write, .rewrite: self.contentState.promptPickerMode = .edit
             case .command: break
             }
         }
-        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: self.hasTranscription)
-        .animation(.easeInOut(duration: 0.2), value: self.contentState.mode)
-        .animation(.easeInOut(duration: 0.25), value: self.contentState.isProcessing)
-    }
-}
-
-// MARK: - Minimal Notch Waveform (Color-matched)
-
-struct NotchWaveformView: View {
-    let audioPublisher: AnyPublisher<CGFloat, Never>
-    let color: Color
-
-    @StateObject private var data: AudioVisualizationData
-    @ObservedObject private var contentState = NotchContentState.shared
-    @State private var barHeights: [CGFloat] = Array(repeating: 3, count: 7)
-    @State private var noiseThreshold: CGFloat = .init(SettingsStore.shared.visualizerNoiseThreshold)
-
-    private let barCount = 7
-    private let barWidth: CGFloat = 3
-    private let barSpacing: CGFloat = 4
-    private let minHeight: CGFloat = 3
-    private let maxHeight: CGFloat = 20
-
-    private var currentGlowIntensity: CGFloat {
-        self.contentState.isProcessing ? 0.0 : 0.35
-    }
-
-    private var currentGlowRadius: CGFloat {
-        self.contentState.isProcessing ? 0.0 : 1.5
-    }
-
-    private var currentOuterGlowRadius: CGFloat {
-        0
-    }
-
-    init(audioPublisher: AnyPublisher<CGFloat, Never>, color: Color, isProcessing: Bool = false) {
-        self.audioPublisher = audioPublisher
-        self.color = color
-        _data = StateObject(wrappedValue: AudioVisualizationData(audioLevelPublisher: audioPublisher))
-    }
-
-    var body: some View {
-        HStack(spacing: self.barSpacing) {
-            ForEach(0..<self.barCount, id: \.self) { index in
-                RoundedRectangle(cornerRadius: self.barWidth / 2)
-                    .fill(self.color)
-                    .frame(width: self.barWidth, height: self.barHeights[index])
-                    .shadow(color: self.color.opacity(self.currentGlowIntensity), radius: self.currentGlowRadius, x: 0, y: 0)
-                    .shadow(color: self.color.opacity(self.currentGlowIntensity * 0.5), radius: self.currentOuterGlowRadius, x: 0, y: 0)
-            }
-        }
-        .onChange(of: self.data.audioLevel) { _, level in
-            if !self.contentState.isProcessing {
-                self.updateBars(level: level)
-            }
-        }
         .onChange(of: self.contentState.isProcessing) { _, processing in
-            if processing {
-                self.setFlatProcessingBars()
-            } else {
-                // Resume from silence; next audio tick will animate up.
-                self.updateBars(level: 0)
-            }
+            if processing { OverlayMenuController.shared.hide() }
         }
-        .onAppear {
-            if self.contentState.isProcessing {
-                self.setFlatProcessingBars()
-            } else {
-                self.updateBars(level: 0)
-            }
-        }
-        .onDisappear {
-            // No timers to clean up.
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            // Update threshold when user changes sensitivity setting
-            let newThreshold = CGFloat(SettingsStore.shared.visualizerNoiseThreshold)
-            if newThreshold != self.noiseThreshold {
-                self.noiseThreshold = newThreshold
-            }
-        }
+        .motion(Motion.state, value: self.contentState.mode)
     }
 
-    private func setFlatProcessingBars() {
-        // During AI processing we want the visualizer to settle to silence (flat).
-        withAnimation(.easeOut(duration: 0.18)) {
-            for i in 0..<self.barCount {
-                self.barHeights[i] = self.minHeight
+    @ViewBuilder
+    private var footer: some View {
+        if let promptMode = self.mode.promptMode {
+            Button {
+                OverlayMenuController.shared.toggle(
+                    .prompt(promptMode),
+                    anchor: self.promptChipFrame,
+                    parent: self.promptChipWindow,
+                    direction: .below
+                )
+            } label: {
+                OverlayChipLabel(title: "Prompt", value: self.selectedPromptLabel)
             }
-        }
-    }
-
-    private func updateBars(level: CGFloat) {
-        let normalizedLevel = min(max(level, 0), 1)
-        let isActive = normalizedLevel > self.noiseThreshold // Use user's sensitivity setting
-
-        withAnimation(.spring(response: 0.15, dampingFraction: 0.6)) {
-            for i in 0..<self.barCount {
-                let centerDistance = abs(CGFloat(i) - CGFloat(self.barCount - 1) / 2)
-                let centerFactor = 1.0 - (centerDistance / CGFloat(self.barCount / 2)) * 0.4
-
-                if isActive {
-                    // Scale audio level relative to threshold for smoother response
-                    let adjustedLevel = (normalizedLevel - self.noiseThreshold) / (1.0 - self.noiseThreshold)
-                    let randomVariation = CGFloat.random(in: 0.7...1.0)
-                    self.barHeights[i] = self.minHeight + (self.maxHeight - self.minHeight) * adjustedLevel * centerFactor * randomVariation
-                } else {
-                    // Complete stillness when below threshold
-                    self.barHeights[i] = self.minHeight
+            .buttonStyle(OverlayChipButtonStyle())
+            .background(
+                OverlayAnchorReader { frame, window in
+                    self.promptChipFrame = frame
+                    self.promptChipWindow = window
                 }
+                .allowsHitTesting(false)
+            )
+            .disabled(self.phase.isWorking || self.phase.isTerminal)
+            .accessibilityLabel("Prompt: \(self.selectedPromptLabel)")
+            .accessibilityHint("Choose the prompt used for this dictation")
+        } else if self.canExpandCommandHistory {
+            Button {
+                NotchOverlayManager.shared.onNotchClicked?()
+            } label: {
+                OverlayChipLabel(value: "Show Conversation", systemImage: "bubble.left.and.bubble.right", showsChevron: false)
             }
+            .buttonStyle(OverlayChipButtonStyle())
         }
-    }
-}
-
-// MARK: - Compact Views (Small States)
-
-struct NotchCompactLeadingView: View {
-    @ObservedObject private var contentState = NotchContentState.shared
-    @State private var isPulsing = false
-
-    var body: some View {
-        Image(systemName: "waveform")
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(self.contentState.mode.notchColor)
-            .scaleEffect(self.isPulsing ? 1.1 : 1.0)
-            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: self.isPulsing)
-            .onAppear { self.isPulsing = true }
-            .onDisappear { self.isPulsing = false }
-    }
-}
-
-struct NotchCompactTrailingView: View {
-    @ObservedObject private var contentState = NotchContentState.shared
-    @State private var isPulsing = false
-
-    var body: some View {
-        Circle()
-            .fill(self.contentState.mode.notchColor)
-            .frame(width: 5, height: 5)
-            .opacity(self.isPulsing ? 0.5 : 1.0)
-            .scaleEffect(self.isPulsing ? 0.85 : 1.0)
-            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: self.isPulsing)
-            .onAppear { self.isPulsing = true }
-            .onDisappear { self.isPulsing = false }
     }
 }
 
 // MARK: - Expanded Command Output View (Interactive Notch)
 
 struct NotchCommandOutputExpandedView: View {
-    let audioPublisher: AnyPublisher<CGFloat, Never>
+    let maxHeight: CGFloat
+    let onDismiss: () -> Void
+    let onSubmit: (String) async -> Void
+    let onNewChat: () -> Void
+    let onSwitchChat: (String) -> Void
+    let onClearChat: () -> Void
+
+    var body: some View {
+        CommandOutputContent(
+            maxHeight: self.maxHeight,
+            onDismiss: self.onDismiss,
+            onSubmit: self.onSubmit,
+            onNewChat: self.onNewChat,
+            onSwitchChat: self.onSwitchChat,
+            onClearChat: self.onClearChat
+        )
+        .sayItOverlayTheme()
+    }
+}
+
+private struct CommandOutputContent: View {
+    let maxHeight: CGFloat
     let onDismiss: () -> Void
     let onSubmit: (String) async -> Void
     let onNewChat: () -> Void
@@ -713,313 +386,225 @@ struct NotchCommandOutputExpandedView: View {
     @Environment(\.theme) private var theme
     @State private var inputText: String = ""
     @FocusState private var isInputFocused: Bool
-    @State private var scrollProxy: ScrollViewProxy?
-    @State private var isHoveringNewChat = false
-    @State private var isHoveringRecent = false
-    @State private var isHoveringClear = false
-    @State private var isHoveringDismiss = false
+    @State private var isConfirmingDelete = false
 
-    private let commandRed = Color(red: 1.0, green: 0.35, blue: 0.35)
+    private static let width: CGFloat = 380
+    private static let minHeight: CGFloat = 120
+    private static let userBubbleMaxWidth: CGFloat = 280
+    private static let assistantBubbleMaxWidth: CGFloat = 320
+    private static let previewLines = 3
+    private static let deleteConfirmationWindow: Double = 3
 
-    private var previewMaxHeight: CGFloat {
-        70
+    private var commandColor: Color {
+        self.theme.overlay.command
     }
 
-    // Dynamic height based on content (max half screen)
+    @State private var headerAndPreviewHeight: CGFloat = 0
+    @State private var inputHeight: CGFloat = 0
+    @State private var conversationHeight: CGFloat = 0
+
+    private var chromeHeight: CGFloat {
+        self.headerAndPreviewHeight + self.inputHeight
+    }
+
+    /// Height follows the measured conversation, capped by the target screen (set by the manager).
     private var dynamicHeight: CGFloat {
-        let baseHeight: CGFloat = 120 // Minimum height
-        let contentHeight = self.estimateContentHeight()
-        let maxHeight = (NSScreen.main?.frame.height ?? 800) * 0.45 // 45% of screen
-        return min(max(baseHeight, contentHeight), maxHeight)
-    }
-
-    private func estimateContentHeight() -> CGFloat {
-        var height: CGFloat = 80 // Header + input area
-
-        // Estimate based on conversation history
-        for message in self.contentState.commandConversationHistory {
-            let lineCount = max(1, message.content.count / 60) // ~60 chars per line
-            height += CGFloat(lineCount) * 18 + 16 // Line height + padding
-        }
-
-        // Add streaming text height
-        if !self.contentState.commandStreamingText.isEmpty {
-            let lineCount = max(1, contentState.commandStreamingText.count / 60)
-            height += CGFloat(lineCount) * 18 + 16
-        }
-
-        return height
+        min(max(Self.minHeight, self.chromeHeight + self.conversationHeight), self.maxHeight)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header with waveform and dismiss
-            self.headerView
+            VStack(spacing: 0) {
+                self.headerView
 
-            // Transcription preview (shown while recording)
-            self.transcriptionPreview
+                if self.contentState.isRecordingInExpandedMode, !self.contentState.cachedPreviewText.isEmpty {
+                    OverlayTranscriptText(
+                        text: self.contentState.cachedPreviewText,
+                        font: AppFont.Overlay.transcriptCompact,
+                        lines: Self.previewLines
+                    )
+                    .padding(.horizontal, Space.md)
+                    .padding(.vertical, Space.sm)
+                    .background(self.commandColor.opacity(0.08))
+                    .motionTransition(edge: .top)
+                }
 
-            Divider()
-                .background(self.commandRed.opacity(0.3))
+                Rectangle()
+                    .fill(self.theme.overlay.hairline)
+                    .frame(height: 1)
+            }
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { self.headerAndPreviewHeight = $0 }
 
-            // Scrollable conversation area
             self.conversationArea
 
-            // Input area for follow-up commands
             self.inputArea
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { self.inputHeight = $0 }
         }
-        .frame(width: 380, height: self.dynamicHeight)
-        .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: self.contentState.commandConversationHistory.count)
-        // No animation on streamingText - it updates too frequently, animations add overhead
-        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: self.contentState.isRecordingInExpandedMode)
+        .frame(width: Self.width, height: self.dynamicHeight)
+        .background(self.theme.overlay.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .motion(Motion.state, value: self.contentState.commandConversationHistory.count)
+        .motion(Motion.state, value: self.contentState.isRecordingInExpandedMode)
     }
 
     // MARK: - Header
 
     private var headerView: some View {
-        HStack(spacing: 8) {
-            // Left: Waveform + Mode label
-            HStack(spacing: 6) {
-                // Waveform - only show when recording, otherwise show static indicator
-                if self.contentState.isRecordingInExpandedMode {
-                    ExpandedModeWaveformView(color: self.commandRed)
-                        .frame(width: 50, height: 18)
-                } else {
-                    // Static indicator when not recording
-                    HStack(spacing: 3) {
-                        ForEach(0..<5, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: 1.5)
-                                .fill(self.commandRed.opacity(0.4))
-                                .frame(width: 3, height: 6)
-                        }
-                    }
-                    .frame(width: 50, height: 18)
-                }
+        HStack(spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
+                LevelMeter(
+                    color: self.commandColor,
+                    style: .commandHeader,
+                    isLive: self.contentState.isRecordingInExpandedMode
+                )
+                .opacity(self.contentState.isRecordingInExpandedMode ? 1 : 0.4)
 
-                // Mode label
                 if self.contentState.isRecordingInExpandedMode {
-                    Text("Listening...")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.commandRed)
+                    Text("Listening")
+                        .font(AppFont.Overlay.status)
+                        .foregroundStyle(self.commandColor)
                 } else if self.contentState.isCommandProcessing {
-                    ShimmerText(text: "Working...", color: self.commandRed)
+                    OverlayShimmerText(text: "Working…", color: self.commandColor)
                 } else {
                     Text("Command")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(self.commandRed.opacity(0.7))
+                        .font(AppFont.Overlay.status)
+                        .foregroundStyle(self.commandColor)
                 }
             }
+            .accessibilityElement(children: .combine)
 
             Spacer()
 
-            // Right: Chat management buttons + Dismiss
-            HStack(spacing: 6) {
-                // New Chat Button (+)
-                Button(action: self.onNewChat) {
-                    ZStack {
-                        Circle()
-                            .fill(self.isHoveringNewChat ? self.commandRed.opacity(0.25) : self.commandRed.opacity(0.12))
-                            .frame(width: 22, height: 22)
-                        Image(systemName: "plus")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(self.contentState.isCommandProcessing ? .white.opacity(0.3) : self.commandRed.opacity(0.85))
-                    }
-                }
-                .buttonStyle(.plain)
-                .contentShape(Circle())
-                .onHover { self.isHoveringNewChat = $0 }
-                .disabled(self.contentState.isCommandProcessing)
-                .help("New chat")
+            HStack(spacing: Space.xs) {
+                IconButton("New Chat", systemName: "plus", size: 24, action: self.onNewChat)
+                    .disabled(self.contentState.isCommandProcessing)
 
-                // Recent Chats Menu
-                Menu {
-                    let recentChats = self.contentState.recentChats
-                    let currentID = ChatHistoryStore.shared.currentChatID
-                    if recentChats.isEmpty {
-                        Text("No recent chats")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(recentChats) { chat in
-                            Button(action: {
-                                if chat.id != currentID {
-                                    self.onSwitchChat(chat.id)
-                                }
-                            }) {
-                                HStack {
-                                    if chat.id == currentID {
-                                        Image(systemName: "checkmark")
-                                            .font(.caption)
-                                    }
-                                    Text(chat.title)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text(chat.relativeTimeString)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .disabled(self.contentState.isCommandProcessing)
-                        }
-                    }
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(self.isHoveringRecent ? self.commandRed.opacity(0.25) : self.commandRed.opacity(0.12))
-                            .frame(width: 22, height: 22)
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(self.commandRed.opacity(0.85))
-                    }
-                }
-                .menuIndicator(.hidden)
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .frame(width: 22, height: 22)
-                .onHover { self.isHoveringRecent = $0 }
-                .help("Recent chats")
+                self.recentChatsMenu
 
-                // Delete Chat Button - deletes the current chat entirely
-                Button(action: self.onClearChat) {
-                    ZStack {
-                        Circle()
-                            .fill(self.isHoveringClear ? self.commandRed.opacity(0.25) : self.commandRed.opacity(0.12))
-                            .frame(width: 22, height: 22)
-                        Image(systemName: "trash")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(self.contentState.isCommandProcessing ? .white.opacity(0.3) : self.commandRed.opacity(0.85))
+                if self.isConfirmingDelete {
+                    Button("Delete Chat?", action: self.confirmDelete)
+                        .buttonStyle(.sayIt(.destructive, size: .small))
+                        .transition(.opacity)
+                } else {
+                    IconButton("Delete Chat", systemName: "trash", role: .destructive, size: 24) {
+                        self.requestDelete()
                     }
+                    .disabled(self.contentState.isCommandProcessing)
                 }
-                .buttonStyle(.plain)
-                .contentShape(Circle())
-                .onHover { self.isHoveringClear = $0 }
-                .disabled(self.contentState.isCommandProcessing)
-                .help("Delete chat")
 
-                // Vertical divider
                 Rectangle()
-                    .fill(.white.opacity(0.15))
+                    .fill(self.theme.overlay.hairline)
                     .frame(width: 1, height: 14)
-                    .padding(.horizontal, 2)
+                    .padding(.horizontal, Space.xxs)
 
-                // Dismiss Button (X)
-                Button(action: self.onDismiss) {
-                    ZStack {
-                        Circle()
-                            .fill(self.isHoveringDismiss ? self.commandRed.opacity(0.25) : self.commandRed.opacity(0.12))
-                            .frame(width: 22, height: 22)
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(self.commandRed.opacity(0.85))
-                    }
-                }
-                .buttonStyle(.plain)
-                .contentShape(Circle())
-                .onHover { self.isHoveringDismiss = $0 }
-                .help("Close (Escape)")
+                OverlayKeyCap(text: "esc")
+                IconButton("Close (Esc)", systemName: "xmark", size: 24, action: self.onDismiss)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm)
         .onAppear {
             self.contentState.refreshRecentChats()
         }
     }
 
-    // MARK: - Transcription Preview (shown while recording)
-
-    private var transcriptionPreview: some View {
-        Group {
-            if self.contentState.isRecordingInExpandedMode && !self.contentState.transcriptionText.isEmpty {
-                let previewText = self.contentState.cachedPreviewText
-                if !previewText.isEmpty {
-                    ScrollViewReader { proxy in
-                        ScrollView(.vertical, showsIndicators: false) {
-                            Text(previewText)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.75))
-                                .multilineTextAlignment(.leading)
-                                .lineLimit(nil)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Color.clear.frame(height: 1).id("bottom")
+    private var recentChatsMenu: some View {
+        Menu {
+            let recentChats = self.contentState.recentChats
+            let currentID = ChatHistoryStore.shared.currentChatID
+            if recentChats.isEmpty {
+                Text("No Recent Chats")
+            } else {
+                ForEach(recentChats) { chat in
+                    Button {
+                        if chat.id != currentID {
+                            self.onSwitchChat(chat.id)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: self.previewMaxHeight)
-                        .clipped()
-                        .onAppear {
-                            DispatchQueue.main.async {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
-                        .onChange(of: previewText) { _, _ in
-                            DispatchQueue.main.async {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
+                    } label: {
+                        if chat.id == currentID {
+                            Label("\(chat.title) — \(chat.relativeTimeString)", systemImage: "checkmark")
+                        } else {
+                            Text("\(chat.title) — \(chat.relativeTimeString)")
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(self.commandRed.opacity(0.1))
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .disabled(self.contentState.isCommandProcessing)
                 }
             }
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(AppFont.icon)
+                .foregroundStyle(self.theme.overlay.secondaryText)
+                .frame(width: 24, height: 24)
         }
-        .animation(.easeInOut(duration: 0.2), value: self.contentState.isRecordingInExpandedMode)
-        .animation(.easeInOut(duration: 0.15), value: self.contentState.transcriptionText)
+        .menuIndicator(.hidden)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("Recent Chats")
+        .accessibilityLabel("Recent Chats")
     }
 
-    // MARK: - Conversation Area
+    /// Deleting is two clicks: the trash button turns into "Delete Chat?" for a few
+    /// seconds, so a stray click cannot remove a conversation.
+    private func requestDelete() {
+        withMotion(Motion.state) { self.isConfirmingDelete = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.deleteConfirmationWindow) {
+            withMotion(Motion.state) { self.isConfirmingDelete = false }
+        }
+    }
+
+    private func confirmDelete() {
+        self.isConfirmingDelete = false
+        self.onClearChat()
+    }
+
+    // MARK: - Conversation
 
     private var conversationArea: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(alignment: .leading, spacing: 8) {
+                LazyVStack(alignment: .leading, spacing: Space.sm) {
                     ForEach(self.contentState.commandConversationHistory) { message in
                         self.messageView(for: message)
                             .id(message.id)
                     }
 
-                    // Streaming text (real-time)
                     if !self.contentState.commandStreamingText.isEmpty {
                         self.streamingMessageView
                             .id("streaming")
                     }
 
-                    // Processing indicator
-                    if self.contentState.isCommandProcessing && self.contentState.commandStreamingText.isEmpty {
-                        self.processingIndicator
+                    if self.contentState.isCommandProcessing, self.contentState.commandStreamingText.isEmpty {
+                        self.awaitingReplyIndicator
                             .id("processing")
                     }
 
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, Space.sm)
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { self.conversationHeight = $0 }
             }
             .onAppear {
-                self.scrollProxy = proxy
-                // Always scroll to bottom when view appears
                 self.scrollToBottom(proxy, animated: false)
             }
             .onChange(of: self.contentState.commandConversationHistory.count) { _, _ in
                 self.scrollToBottom(proxy, animated: true)
             }
             .onChange(of: self.contentState.commandStreamingText) { _, _ in
-                // Disable animation for streaming text to prevent scroll bar jitter
+                // No animation while streaming: it updates many times per second.
                 self.scrollToBottom(proxy, animated: false)
             }
             .onChange(of: self.contentState.isCommandProcessing) { _, _ in
-                // Scroll when processing state changes
                 self.scrollToBottom(proxy, animated: true)
             }
         }
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        DispatchQueue.main.async {
             if animated {
-                withAnimation(.easeOut(duration: 0.15)) {
+                withMotion(Motion.state) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             } else {
@@ -1028,114 +613,118 @@ struct NotchCommandOutputExpandedView: View {
         }
     }
 
-    // MARK: - Message Views
-
+    @ViewBuilder
     private func messageView(for message: NotchContentState.CommandOutputMessage) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            switch message.role {
-            case .user:
-                Spacer()
+        switch message.role {
+        case .user:
+            HStack {
+                Spacer(minLength: Space.xl)
                 Text(message.content)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(self.commandRed.opacity(0.25))
-                    .cornerRadius(8)
-                    .frame(maxWidth: 280, alignment: .trailing)
+                    .font(AppFont.callout)
+                    .foregroundStyle(self.theme.overlay.primaryText)
+                    .padding(.horizontal, Space.md)
+                    .padding(.vertical, Space.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                            .fill(self.commandColor.opacity(0.18))
+                    )
+                    .frame(maxWidth: Self.userBubbleMaxWidth, alignment: .trailing)
                     .textSelection(.enabled)
+            }
 
-            case .assistant:
+        case .assistant:
+            HStack {
                 Text(message.content)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.08))
-                    .cornerRadius(8)
-                    .frame(maxWidth: 320, alignment: .leading)
+                    .font(AppFont.callout)
+                    .foregroundStyle(self.theme.overlay.primaryText)
+                    .padding(.horizontal, Space.md)
+                    .padding(.vertical, Space.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                            .fill(self.theme.overlay.surfaceRaised)
+                    )
+                    .frame(maxWidth: Self.assistantBubbleMaxWidth, alignment: .leading)
                     .textSelection(.enabled)
-                Spacer()
+                Spacer(minLength: Space.xl)
+            }
 
-            case .status:
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(self.commandRed.opacity(0.6))
-                        .frame(width: 4, height: 4)
-                    Text(message.content)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-                .padding(.vertical, 2)
+        case .status:
+            HStack(spacing: Space.xs) {
+                Circle()
+                    .fill(self.commandColor.opacity(0.7))
+                    .frame(width: Space.xs, height: Space.xs)
+                    .accessibilityHidden(true)
+                Text(message.content)
+                    .font(AppFont.Overlay.label)
+                    .foregroundStyle(self.theme.overlay.tertiaryText)
                 Spacer()
             }
+            .padding(.vertical, Space.xxs)
         }
     }
 
     private var streamingMessageView: some View {
         HStack(alignment: .top) {
             Text(self.contentState.commandStreamingText)
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.85))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.08))
-                .cornerRadius(8)
-                .frame(maxWidth: 320, alignment: .leading)
-                .drawingGroup() // Flatten to bitmap for faster streaming updates
-            // textSelection disabled during streaming for performance
-            Spacer()
+                .font(AppFont.callout)
+                .foregroundStyle(self.theme.overlay.primaryText)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, Space.sm)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                        .fill(self.theme.overlay.surfaceRaised)
+                )
+                .frame(maxWidth: Self.assistantBubbleMaxWidth, alignment: .leading)
+            Spacer(minLength: Space.xl)
         }
     }
 
-    private var processingIndicator: some View {
-        HStack(spacing: 6) {
-            ForEach(0..<3, id: \.self) { index in
+    /// Static marker while waiting for the first token; the header shimmer is the only
+    /// moving element during work.
+    private var awaitingReplyIndicator: some View {
+        HStack(spacing: Space.xs) {
+            ForEach(0..<3, id: \.self) { _ in
                 Circle()
-                    .fill(self.commandRed.opacity(0.6))
-                    .frame(width: 4, height: 4)
-                    .offset(y: self.processingOffset(for: index))
+                    .fill(self.commandColor.opacity(0.5))
+                    .frame(width: Space.xs, height: Space.xs)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Space.xs)
+        .accessibilityLabel("Waiting for a reply")
     }
 
-    @State private var processingAnimation = false
-
-    private func processingOffset(for index: Int) -> CGFloat {
-        // Offset varies by index for staggered animation effect
-        _ = Double(index) * 0.15 // Reserved for future animation timing
-        return self.processingAnimation ? -3 : 3
-    }
-
-    // MARK: - Input Area
+    // MARK: - Input
 
     private var inputArea: some View {
-        HStack(spacing: 8) {
-            TextField("Ask follow-up...", text: self.$inputText)
+        HStack(spacing: Space.sm) {
+            TextField("Ask a follow-up…", text: self.$inputText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.08))
-                .cornerRadius(8)
+                .font(AppFont.callout)
+                .foregroundStyle(self.theme.overlay.primaryText)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, Space.sm)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .fill(self.theme.overlay.surfaceRaised)
+                )
                 .focused(self.$isInputFocused)
                 .onSubmit {
                     self.submitFollowUp()
                 }
+                .accessibilityLabel("Follow-up command")
 
             Button(action: self.submitFollowUp) {
                 Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(self.inputText.isEmpty ? .white.opacity(0.3) : self.commandRed)
+                    .font(AppFont.iconLarge)
+                    .foregroundStyle(self.inputText.isEmpty ? self.theme.overlay.tertiaryText : self.commandColor)
             }
             .buttonStyle(.plain)
             .disabled(self.inputText.isEmpty || self.contentState.isCommandProcessing)
+            .help("Send")
+            .accessibilityLabel("Send")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.white.opacity(0.03))
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm)
     }
 
     private func submitFollowUp() {
@@ -1145,59 +734,6 @@ struct NotchCommandOutputExpandedView: View {
 
         Task {
             await self.onSubmit(text)
-        }
-    }
-}
-
-// MARK: - Expanded Mode Waveform (Reads from NotchContentState)
-
-struct ExpandedModeWaveformView: View {
-    let color: Color
-
-    @ObservedObject private var contentState = NotchContentState.shared
-    @State private var barHeights: [CGFloat] = Array(repeating: 3, count: 5)
-
-    private let barCount = 5
-    private let barWidth: CGFloat = 3
-    private let barSpacing: CGFloat = 3
-    private let minHeight: CGFloat = 4
-    private let maxHeight: CGFloat = 16
-    private let noiseThreshold: CGFloat = 0.05
-
-    var body: some View {
-        HStack(spacing: self.barSpacing) {
-            ForEach(0..<self.barCount, id: \.self) { index in
-                RoundedRectangle(cornerRadius: self.barWidth / 2)
-                    .fill(self.color)
-                    .frame(width: self.barWidth, height: self.barHeights[index])
-                    .shadow(color: self.color.opacity(0.4), radius: 2, x: 0, y: 0)
-            }
-        }
-        .onChange(of: self.contentState.expandedModeAudioLevel) { _, level in
-            self.updateBars(level: level)
-        }
-        .onAppear {
-            self.updateBars(level: self.contentState.expandedModeAudioLevel)
-        }
-    }
-
-    private func updateBars(level: CGFloat) {
-        let normalizedLevel = min(max(level, 0), 1)
-        let isActive = normalizedLevel > self.noiseThreshold
-
-        withAnimation(.spring(response: 0.12, dampingFraction: 0.6)) {
-            for i in 0..<self.barCount {
-                let centerDistance = abs(CGFloat(i) - CGFloat(self.barCount - 1) / 2)
-                let centerFactor = 1.0 - (centerDistance / CGFloat(self.barCount / 2)) * 0.35
-
-                if isActive {
-                    let adjustedLevel = (normalizedLevel - self.noiseThreshold) / (1.0 - self.noiseThreshold)
-                    let randomVariation = CGFloat.random(in: 0.75...1.0)
-                    self.barHeights[i] = self.minHeight + (self.maxHeight - self.minHeight) * adjustedLevel * centerFactor * randomVariation
-                } else {
-                    self.barHeights[i] = self.minHeight
-                }
-            }
         }
     }
 }

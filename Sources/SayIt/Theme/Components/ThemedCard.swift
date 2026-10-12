@@ -1,13 +1,18 @@
 import SwiftUI
 
 enum ThemedCardStyle {
+    /// Default grouped section.
     case standard
+    /// The one focal card on a page (setup checklist, test area, status hero).
+    /// Rendered as a nested tray + core with concentric corners.
     case prominent
+    /// Quiet inset group inside another card.
     case subtle
 }
 
 struct ThemedCard<Content: View>: View {
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     private let style: ThemedCardStyle
@@ -28,88 +33,77 @@ struct ThemedCard<Content: View>: View {
     }
 
     var body: some View {
-        let configuration = CardConfiguration(style: style, theme: theme)
-        let shape = RoundedRectangle(cornerRadius: configuration.cornerRadius, style: .continuous)
+        switch self.style {
+        case .standard:
+            self.surface(radius: Radius.lg, fill: self.theme.palette.surface, elevated: false)
+        case .subtle:
+            self.content
+                .padding(self.padding ?? Space.md)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .fill(self.theme.palette.surfaceSunken)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .strokeBorder(self.theme.palette.hairline, lineWidth: 1)
+                )
+        case .prominent:
+            // Outer tray holds the core with a 4pt gap so the two radii stay concentric.
+            let trayInset = Space.xs
+            self.surface(
+                radius: Radius.concentric(outer: Radius.xl, inset: trayInset),
+                fill: self.theme.palette.surfaceRaised,
+                elevated: true
+            )
+            .padding(trayInset)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+                    .fill(self.theme.palette.accentSubtle.opacity(0.5))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+                    .strokeBorder(self.theme.palette.hairline, lineWidth: 1)
+            )
+        }
+    }
 
-        self.content
-            .padding(self.padding ?? 14)
-            .background(configuration.material, in: shape)
+    private func surface(radius: CGFloat, fill: Color, elevated: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let shadow = elevated ? self.theme.metrics.elevatedCardShadow : self.theme.metrics.cardShadow
+        let hovered = self.hoverEffect && self.isHovered
+
+        return self.content
+            .padding(self.padding ?? Space.lg)
             .background(
                 shape
-                    .fill(configuration.background)
-                    .overlay(
-                        shape.stroke(
-                            configuration.border.opacity(
-                                self.isHovered && self.hoverEffect ? configuration.hoverBorderOpacity : configuration.borderOpacity
-                            ),
-                            lineWidth: configuration.borderWidth
-                        )
-                    )
+                    .fill(hovered ? self.theme.palette.surfaceRaised : fill)
                     .shadow(
-                        color: configuration.shadow.color.opacity(
-                            self.isHovered && self.hoverEffect ? min(configuration.shadow.opacity + configuration.hoverShadowBoost, 1.0) : configuration.shadow.opacity
-                        ),
-                        radius: configuration.shadow.radius,
-                        x: configuration.shadow.x,
-                        y: self.isHovered && self.hoverEffect ? configuration.shadow.y + 1 : configuration.shadow.y
+                        color: shadow.color.opacity(hovered ? shadow.opacity * 1.4 : shadow.opacity),
+                        radius: shadow.radius,
+                        x: shadow.x,
+                        y: shadow.y
                     )
             )
-            .scaleEffect(self.isHovered && self.hoverEffect ? 1.01 : 1.0)
+            .overlay(
+                shape.strokeBorder(self.theme.palette.hairline, lineWidth: 1)
+            )
+            .overlay(alignment: .top) {
+                // Top-edge highlight: reads as a lit bevel on dark surfaces.
+                shape
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [self.theme.palette.innerHighlight, .clear],
+                            startPoint: .top,
+                            endPoint: .center
+                        ),
+                        lineWidth: 1
+                    )
+                    .allowsHitTesting(false)
+            }
             .onHover { hovering in
                 guard self.hoverEffect else { return }
                 self.isHovered = hovering
             }
-            .animation(.easeOut(duration: 0.18), value: self.isHovered)
-    }
-}
-
-// MARK: - Configuration
-
-private extension ThemedCard {
-    struct CardConfiguration {
-        let background: Color
-        let border: Color
-        let borderOpacity: Double
-        let hoverBorderOpacity: Double
-        let borderWidth: CGFloat
-        let material: Material
-        let cornerRadius: CGFloat
-        let shadow: AppTheme.Metrics.Shadow
-        let hoverShadowBoost: Double
-
-        init(style: ThemedCardStyle, theme: AppTheme) {
-            switch style {
-            case .standard:
-                self.background = theme.palette.cardBackground
-                self.border = theme.palette.cardBorder
-                self.borderOpacity = 0.28
-                self.hoverBorderOpacity = 0.5
-                self.borderWidth = 1
-                self.material = theme.materials.card
-                self.cornerRadius = theme.metrics.corners.lg
-                self.shadow = theme.metrics.cardShadow
-                self.hoverShadowBoost = 0.12
-            case .prominent:
-                self.background = theme.palette.elevatedCardBackground
-                self.border = theme.palette.accent
-                self.borderOpacity = 0.25
-                self.hoverBorderOpacity = 0.55
-                self.borderWidth = 1.2
-                self.material = theme.materials.elevatedCard
-                self.cornerRadius = theme.metrics.corners.lg
-                self.shadow = theme.metrics.elevatedCardShadow
-                self.hoverShadowBoost = 0.15
-            case .subtle:
-                self.background = theme.palette.contentBackground
-                self.border = theme.palette.cardBorder
-                self.borderOpacity = 0.18
-                self.hoverBorderOpacity = 0.32
-                self.borderWidth = 0.8
-                self.material = theme.materials.card
-                self.cornerRadius = theme.metrics.corners.md
-                self.shadow = theme.metrics.cardShadow
-                self.hoverShadowBoost = 0.08
-            }
-        }
+            .animation(Motion.resolved(Motion.snappy, reduceMotion: self.reduceMotion), value: hovered)
     }
 }

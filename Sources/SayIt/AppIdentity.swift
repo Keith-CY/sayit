@@ -6,7 +6,6 @@ enum AppIdentity {
     static let displayName = "SayIt"
     static let legacyDisplayName = "SayIt"
     static let menuStatusReady = "Ready to Record"
-    static let menuStatusRecording = "Recording..."
     static let menuOpenItem = "Open \(displayName)"
     static let menuQuitItem = "Quit \(displayName)"
 
@@ -24,4 +23,9 @@ enum AppIdentity {
 
     static let defaultsAccessibilityRestartKey = "SayIt_AccessibilityRestartPending"
     static let defaultsAutoRestartedAccessibilityKey = "SayIt_HasAutoRestartedForAccessibility"
+}
+
+enum AppEnvironment {
+    /// True when the app is launched as the host for XCTest.
+    static let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 }

@@ -54,7 +54,12 @@ private actor ModelDownloadRegistry {
         self.tasks[key] = task
         defer { tasks[key] = nil }
 
-        try await task.value
+        // Propagate cancellation from the caller (e.g. Home's Cancel button) to the download.
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 }
 
@@ -126,8 +131,8 @@ final class ASRService: ObservableObject {
     /// Returns a user-friendly status message for model loading state
     var modelStatusMessage: String {
         if self.isAsrReady { return "Model ready" }
-        if self.isDownloadingModel { return "Downloading model..." }
-        if self.isLoadingModel { return "Loading model into memory..." }
+        if self.isDownloadingModel { return "Downloading speech model…" }
+        if self.isLoadingModel { return "Loading speech model…" }
         if self.modelsExistOnDisk { return "Model cached, needs loading" }
         return "Model not downloaded"
     }

@@ -383,11 +383,11 @@ final class CommandModeService: ObservableObject {
         }
 
         self.currentTurnCount += 1
-        self.currentStep = .thinking("Analyzing...")
+        self.currentStep = .thinking("Analyzing…")
 
         // Push status to notch
         if self.enableNotchOutput {
-            NotchContentState.shared.addCommandMessage(role: .status, content: "Thinking...")
+            NotchContentState.shared.addCommandMessage(role: .status, content: "Thinking…")
         }
 
         do {
@@ -562,9 +562,9 @@ final class CommandModeService: ObservableObject {
 
     private func stepDescription(for stepType: Message.StepType) -> String {
         switch stepType {
-        case .checking: return "Checking prerequisites..."
-        case .verifying: return "Verifying the result..."
-        case .executing: return "Executing command..."
+        case .checking: return "Checking prerequisites…"
+        case .verifying: return "Verifying the result…"
+        case .executing: return "Running command…"
         default: return ""
         }
     }
@@ -977,7 +977,7 @@ final class CommandModeService: ObservableObject {
 
         // Text response only
         return LLMResponse(
-            content: response.content.isEmpty ? "I couldn't understand that." : response.content,
+            content: response.content.isEmpty ? "I couldn’t understand that." : response.content,
             thinking: finalThinking, // Display-only
             toolCall: nil
         )

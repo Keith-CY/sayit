@@ -46,7 +46,6 @@ final class MenuBarManager: ObservableObject {
 
     // Subscription for forwarding audio levels to expanded command notch
     private var expandedModeAudioSubscription: AnyCancellable?
-    private let menuBarIconSize = NSSize(width: 18, height: 18)
 
     init() {
         // Don't setup menu bar immediately - defer until app is ready
@@ -83,11 +82,10 @@ final class MenuBarManager: ObservableObject {
             .sink { [weak self] isRunning in
                 self?.isRecording = isRunning
                 if isRunning {
-                    self?.menuBarAnimator?.start(.recording)
+                    self?.menuBarAnimator?.show(.recording)
                 } else if self?.isProcessingActive == false {
-                    self?.menuBarAnimator?.stop()
+                    self?.menuBarAnimator?.show(.idle)
                 }
-                self?.updateMenuBarIcon()
                 self?.updateMenu()
 
                 // Handle overlay lifecycle (independent of window state)
@@ -226,15 +224,17 @@ final class MenuBarManager: ObservableObject {
         // Track processing state to prevent hide during AI refinement
         self.isProcessingActive = processing
 
+        defer { self.updateMenu() }
+
         if processing {
-            self.menuBarAnimator?.start(.processing)
+            self.menuBarAnimator?.show(.processing)
             // Cancel any pending hide - we want to keep the overlay visible for AI processing
             self.pendingHideOperation?.cancel()
             self.pendingHideOperation = nil
             self.overlayVisible = true
         } else {
             if self.isRecording == false {
-                self.menuBarAnimator?.stop()
+                self.menuBarAnimator?.show(.idle)
             }
 
             // When processing ends, schedule the hide (unless expanded output is showing)
@@ -256,7 +256,9 @@ final class MenuBarManager: ObservableObject {
                     return
                 }
 
-                NotchOverlayManager.shared.hide()
+                // Give the pipeline a moment to report the outcome (inserted, failed…)
+                // so the overlay ends on a visible result instead of vanishing.
+                NotchOverlayManager.shared.hideWhenSettled()
                 self.pendingHideOperation = nil
             }
             self.pendingHideOperation = hideItem
@@ -301,7 +303,7 @@ final class MenuBarManager: ObservableObject {
         self.menuBarAnimator = MenuBarAnimator(statusItem: statusItem)
 
         // Set initial icon
-        self.updateMenuBarIcon()
+        self.menuBarAnimator?.show(.idle)
         self.configureMenuBarButton()
 
         // Create menu
@@ -311,20 +313,6 @@ final class MenuBarManager: ObservableObject {
         self.updateMenu()
     }
 
-    private func updateMenuBarIcon() {
-        guard self.statusItem != nil else { return }
-
-        guard let image = MenuBarAnimator.loadImage(named: "MenuBarIcon")
-            ?? MenuBarAnimator.loadImage(named: "menubar_icon_36")
-            ?? MenuBarAnimator.loadImage(named: "menubar_icon_18")
-            ?? MenuBarIconGenerator.createMenuBarIcon()
-        else {
-            return
-        }
-
-        self.applyMenuBarImage(image)
-    }
-
     private func configureMenuBarButton() {
         guard let button = statusItem?.button else { return }
 
@@ -332,25 +320,21 @@ final class MenuBarManager: ObservableObject {
         button.imageScaling = .scaleProportionallyUpOrDown
         button.title = ""
         button.isEnabled = true
-        button.toolTip = "SayIt"
+        self.updateStatusItemAccessibility()
     }
 
-    private func applyMenuBarImage(_ image: NSImage) {
+    /// Short state used for the status item's tooltip, VoiceOver label and menu header.
+    private var statusText: String {
+        if self.isRecording { return "Dictating…" }
+        if self.isProcessingActive { return "Working…" }
+        return "Ready to Dictate"
+    }
+
+    private func updateStatusItemAccessibility() {
         guard let button = statusItem?.button else { return }
-
-        let preparedImage = NSImage(size: self.menuBarIconSize)
-        preparedImage.lockFocus()
-        image.draw(
-            in: NSRect(origin: .zero, size: self.menuBarIconSize),
-            from: NSRect(origin: .zero, size: image.size),
-            operation: .sourceOver,
-            fraction: 1.0
-        )
-        preparedImage.unlockFocus()
-
-        preparedImage.isTemplate = true
-        button.imageScaling = .scaleProportionallyUpOrDown
-        button.image = preparedImage
+        let label = "\(AppIdentity.displayName), \(self.statusText)"
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
     }
 
     private func buildMenuStructure() {
@@ -381,8 +365,8 @@ final class MenuBarManager: ObservableObject {
         openItem.target = self
         menu.addItem(openItem)
 
-        // Preferences
-        let preferencesItem = NSMenuItem(title: "Preferences", action: #selector(openPreferences), keyEquivalent: ",")
+        // Settings
+        let preferencesItem = NSMenuItem(title: "Settings…", action: #selector(openPreferences), keyEquivalent: ",")
         preferencesItem.target = self
         preferencesItem.keyEquivalentModifierMask = [.command]
         menu.addItem(preferencesItem)
@@ -422,18 +406,15 @@ final class MenuBarManager: ObservableObject {
     }
 
     private func updateMenuItemsText() {
-        // Update status text with hotkey info
-        let hotkeyShortcut = SettingsStore.shared.hotkeyShortcut
-        let hotkeyInfo = hotkeyShortcut.displayString.isEmpty ? "" : " (\(hotkeyShortcut.displayString))"
-        let statusTitle = self.isRecording
-            ? "\(AppIdentity.menuStatusRecording)\(hotkeyInfo)"
-            : "\(AppIdentity.menuStatusReady)\(hotkeyInfo)"
-        self.statusMenuItem?.title = statusTitle
+        // Status header with the dictation shortcut
+        let shortcut = SettingsStore.shared.hotkeyShortcut.displayString
+        self.statusMenuItem?.title = shortcut.isEmpty ? self.statusText : "\(self.statusText) (\(shortcut))"
 
-        // Update AI toggle text
-        let aiTitle = self.aiProcessingEnabled ? "Disable AI Processing" : "Enable AI Processing"
-        self.aiMenuItem?.title = aiTitle
+        // AI Enhancement is a checkmark item
+        self.aiMenuItem?.title = "AI Enhancement"
+        self.aiMenuItem?.state = self.aiProcessingEnabled ? .on : .off
 
+        self.updateStatusItemAccessibility()
     }
 
     /// Centralized entry point to update AI post-processing enablement.
@@ -525,11 +506,13 @@ final class MenuBarManager: ObservableObject {
         let rootView = ContentView()
             .environmentObject(self)
             .environmentObject(AppServices.shared)
-            .appTheme(.dark)
-            .preferredColorScheme(.dark)
+            .sayItTheme()
 
         // Host inside an AppKit window
         let hostingController = NSHostingController(rootView: rootView)
+        // Only the content's minimum size constrains the window; the default sizing also
+        // applies the content's ideal size, which resets a resized window on page changes.
+        hostingController.sizingOptions = [.minSize]
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: AppWindowHelper.defaultWindowSize.width, height: AppWindowHelper.defaultWindowSize.height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -538,10 +521,14 @@ final class MenuBarManager: ObservableObject {
         )
         window.title = AppIdentity.displayName
         window.animationBehavior = .none
-        AppWindowHelper.makeUsableMainWindow(window)
         window.isReleasedWhenClosed = false
         window.contentViewController = hostingController
-        window.setFrame(AppWindowHelper.defaultWindowFrame(), display: false)
+        // Reopen at the size and position the user last left it.
+        if !window.setFrameUsingName(AppWindowHelper.frameAutosaveName) {
+            window.setFrame(AppWindowHelper.defaultWindowFrame(), display: false)
+        }
+        window.setFrameAutosaveName(AppWindowHelper.frameAutosaveName)
+        AppWindowHelper.makeUsableMainWindow(window)
         AppWindowHelper.bringToFront(window)
         self.hostedWindow = window
 

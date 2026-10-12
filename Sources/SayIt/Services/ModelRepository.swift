@@ -465,25 +465,25 @@ final class ModelRepository {
 
         switch statusCode {
         case 400:
-            return "Bad Request - The request format was invalid. Check if the base URL '\(endpoint)' is correct for \(providerName)."
+            return "\(providerName) rejected the request. Check that the base URL “\(endpoint)” is correct."
         case 401:
             if responseBody.lowercased().contains("invalid") || responseBody.lowercased().contains("api key") || responseBody.lowercased().contains("authentication") {
-                return "Invalid API Key - The API key for \(providerName) appears to be incorrect or expired. Please verify your API key."
+                return "\(providerName) didn’t accept the API key. It may be mistyped or expired."
             }
-            return "Unauthorized - API key is missing or invalid for \(providerName). Double-check your API key."
+            return "\(providerName) needs a valid API key. Check the key you entered."
         case 403:
             if responseBody.lowercased().contains("permission") || responseBody.lowercased().contains("access") {
-                return "Forbidden - Your API key doesn't have permission to list models for \(providerName). Check your account permissions."
+                return "This API key can’t list models on \(providerName). Check the key’s permissions in your \(providerName) account."
             }
-            return "Forbidden - Access denied for \(providerName). Your API key may lack the required permissions."
+            return "\(providerName) denied access. The API key may not have the permissions it needs."
         case 404:
-            return "Not Found - The /models endpoint doesn't exist at '\(endpoint)'. This provider may not support model listing, or the base URL is incorrect."
+            return "No model list at “\(endpoint)”. The base URL may be wrong, or this provider doesn’t list models — enter a model name instead."
         case 429:
-            return "Rate Limited - Too many requests to \(providerName). Wait a moment and try again."
+            return "\(providerName) is limiting requests. Wait a moment, then try again."
         case 500, 502, 503:
-            return "\(providerName) server error (HTTP \(statusCode)). The service may be temporarily unavailable."
+            return "\(providerName) had a server problem (HTTP \(statusCode)). Try again in a few minutes."
         default:
-            return "HTTP \(statusCode) from \(providerName). Check your API key and base URL configuration."
+            return "\(providerName) returned an unexpected response (HTTP \(statusCode)). Check the API key and base URL."
         }
     }
 
@@ -492,19 +492,19 @@ final class ModelRepository {
         let nsError = error as NSError
         switch nsError.code {
         case NSURLErrorTimedOut:
-            return "Connection timed out - The server didn't respond in time. Check if the base URL is correct and the service is running."
+            return "The server didn’t respond in time. Check the base URL and that the service is running."
         case NSURLErrorCannotConnectToHost:
-            return "Cannot connect to host - Check if the base URL is correct. For local providers (llama.cpp, Ollama, LM Studio), ensure the server is running."
+            return "Couldn’t connect to the server. Check the base URL; for llama.cpp, Ollama or LM Studio, make sure the server is running."
         case NSURLErrorNetworkConnectionLost:
-            return "Network connection lost - Check your internet connection."
+            return "The network connection was lost. Check your connection and try again."
         case NSURLErrorNotConnectedToInternet:
-            return "No internet connection - Check your network settings."
+            return "This Mac is offline. Connect to the internet and try again."
         case NSURLErrorSecureConnectionFailed:
-            return "SSL/TLS error - The server's security certificate may be invalid or expired."
+            return "Couldn’t make a secure connection. The server’s certificate may be invalid or expired."
         case NSURLErrorCannotFindHost:
-            return "Cannot find host - The domain name doesn't exist. Check if the base URL is spelled correctly."
+            return "Couldn’t find that server. Check the spelling of the base URL."
         default:
-            return "\(error.localizedDescription) (Error code: \(nsError.code))"
+            return "\(error.localizedDescription) (error \(nsError.code))"
         }
     }
 

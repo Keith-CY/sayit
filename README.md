@@ -23,10 +23,11 @@ Download: [latest release](https://github.com/Keith-CY/sayit/releases/latest)
 ## Quick Start
 
 1. Download and open SayIt from releases.
-2. Grant the required permissions.
-3. Open **Settings** and set a hotkey.
-4. Press the hotkey to start/stop recording.
-5. Confirm the transcribed text and send.
+2. Follow the checklist on **Home**: allow the microphone, allow Accessibility,
+   and download a speech model.
+3. Press your shortcut (Right ⌥ by default) in any app, speak, and press it again.
+   The text is typed where your cursor is. Press Esc to cancel.
+4. Change the shortcut in **General → Keyboard Shortcuts**.
 
 Because SayIt is distributed without an Apple Developer account, the first
 download is not notarized. Download only from this repository, then
@@ -38,10 +39,10 @@ Gatekeeper globally.
 
 For Chinese dictation that includes English names, product terms, or technical phrases:
 
-1. Open `Settings` -> `Voice Engine`.
+1. Open **Voice Engine** in the sidebar.
 2. Set `Speech Language` to `中文 + English (Mixed)`.
-3. In the model downloads, select **Qwen3-ASR 1.7B · 8bit** and click **Download** (about 2.47 GB).
-4. Once the download finishes, click **Activate**. Downloading alone does not change the active model.
+3. Under **Speech Models**, find **Qwen3-ASR 1.7B** and click **Download** (about 2.47 GB).
+4. Once the download finishes, click **Use**. Downloading alone does not change the model in use.
 5. Keep AI Enhancement off for literal transcription, or enable it only when you want cleanup.
 
 Qwen uses [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit)
@@ -59,7 +60,7 @@ an incomplete or damaged download is not offered for activation.
 
 SayIt supports OpenAI v1-compatible APIs, including local providers like llama.cpp, Ollama, and LM Studio.
 
-1. Open `Settings` -> `AI Enhancements`.
+1. Open **AI Enhancement** in the sidebar.
 2. Pick one of:
    - `llama.cpp` (default: `http://127.0.0.1:8080/v1`)
    - `Ollama` (default: `http://localhost:11434/v1`)
@@ -82,7 +83,7 @@ Notes:
 
 ## Updates
 
-SayIt 1.6.0 and later can check GitHub Releases from **Preferences -> Software
+SayIt 1.6.0 and later can check GitHub Releases from **General → Software
 Updates** or **Check for Updates…** in the menu bar. The app checks once per
 day by default, but it never installs without confirmation.
 
