@@ -23,6 +23,18 @@ final class DictationE2ETests: XCTestCase {
     private static let llamaCppTestModelEnvKey = "LLAMA_CPP_TEST_MODEL"
 
     @MainActor
+    func testTranscriptContent_treatsHesitationOnlyTranscriptsAsNoSpeech() {
+        let noFillers: [String] = []
+        for text in ["", "  ", "嗯。", "嗯嗯", "呃……", "Um.", "hmmm", "Uh, um.", "…"] {
+            XCTAssertTrue(TranscriptContent.hasNoWords(text, fillers: noFillers), "\(text) should count as no speech")
+        }
+        for text in ["好的。", "OK.", "嗯，我们下午开会。", "Um, ship it.", "请帮我 review 这个 pull request"] {
+            XCTAssertFalse(TranscriptContent.hasNoWords(text, fillers: noFillers), "\(text) has words")
+        }
+        XCTAssertTrue(TranscriptContent.hasNoWords("like, you know", fillers: ["like", "you", "know"]))
+    }
+
+    @MainActor
     func testAppVersion_displayNameIncludesBuildNumber() {
         let version = AppVersion(marketingVersion: "1.6.1", buildNumber: "10")
 

@@ -1364,8 +1364,9 @@ struct ContentView: View {
             return
         }
 
-        guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
+        // Silence often comes back as a hesitation sound ("嗯。"); never type that.
+        guard !TranscriptContent.hasNoWords(transcribedText) else {
+            DebugLogger.shared.debug("Transcription had no words", source: "ContentView")
             // Say why nothing was typed before the overlay leaves.
             if self.asr.showError {
                 NotchOverlayManager.shared.present(.failed(self.asr.errorTitle))

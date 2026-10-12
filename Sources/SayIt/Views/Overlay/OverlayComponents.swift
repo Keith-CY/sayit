@@ -434,6 +434,19 @@ struct OverlayTranscriptText: View {
         self.showsPlaceholder ? (self.placeholder ?? "") : self.text
     }
 
+    /// Changes only when the placeholder changes or real words replace it — not on every
+    /// streamed word — so only those swaps run the transition below.
+    private var contentKey: String {
+        self.showsPlaceholder ? "placeholder:\(self.placeholder ?? "")" : "transcript"
+    }
+
+    /// The outgoing text leaves before the incoming text arrives, so the two never
+    /// overlap mid-fade (one protagonist at a time).
+    private static let swapTransition = AnyTransition.asymmetric(
+        insertion: .opacity.animation(Motion.enter.delay(Motion.quick)),
+        removal: .opacity.animation(Motion.exit)
+    )
+
     @State private var boxHeight: CGFloat = 0
     @State private var textHeight: CGFloat = 0
 
@@ -451,6 +464,8 @@ struct OverlayTranscriptText: View {
                     .lineLimit(1, reservesSpace: true)
                     .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(self.contentKey)
+                    .transition(Self.swapTransition)
             } else {
                 // Placeholder sizes the box to exactly `lines` lines of this font, using
                 // glyphs from both scripts so mixed Chinese/English lines fit.
@@ -467,6 +482,8 @@ struct OverlayTranscriptText: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .onGeometryChange(for: CGFloat.self, of: \.size.height) { self.textHeight = $0 }
+                            .id(self.contentKey)
+                            .transition(Self.swapTransition)
                     }
                     .clipped()
                     .mask(
