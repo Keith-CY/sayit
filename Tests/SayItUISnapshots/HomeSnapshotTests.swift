@@ -111,8 +111,8 @@ extension HomeState {
             aiEnhancementConfigured: false,
             aiEnhancementEnabled: false,
             shortcut: "Right ⌥",
-            commandShortcut: "⌃ + ⌥ + C",
-            editShortcut: "⌃ + ⌥ + E",
+            commandShortcut: "⌃⌥C",
+            editShortcut: "⌃⌥E",
             historyEnabled: true,
             recent: []
         )

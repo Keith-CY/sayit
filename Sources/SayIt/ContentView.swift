@@ -2031,7 +2031,7 @@ struct ContentView: View {
                 "Failed to load cached speech model: \(error.localizedDescription)",
                 source: "ContentView"
             )
-            self.asr.errorTitle = "Voice Model Failed to Load"
+            self.asr.errorTitle = "Speech Model Couldn’t Load"
             self.asr.errorMessage = error.localizedDescription
             self.asr.showError = true
         }

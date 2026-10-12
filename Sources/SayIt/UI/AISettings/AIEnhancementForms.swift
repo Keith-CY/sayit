@@ -245,7 +245,7 @@ struct AIEditProviderForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if self.isAppleIntelligence {
-                AIInlineNotice(kind: .info, text: "Apple Intelligence runs on this Mac and doesn't need an API key or base URL.")
+                AIInlineNotice(kind: .info, text: "Apple Intelligence runs on this Mac and doesn’t need an API key or base URL.")
             } else {
                 if !self.isBuiltIn {
                     AIField("Name") {
@@ -757,9 +757,9 @@ struct AIPromptEditorForm: View {
     private var subtitle: String {
         switch self.kind {
         case let .builtIn(mode):
-            return "Your changes replace SayIt's default \(AIPromptModeHeader.shortName(for: mode)) prompt. You can reset it from the prompt's menu."
+            return "Your changes replace SayIt’s default \(AIPromptModeHeader.shortName(for: mode)) prompt. You can reset it from the prompt’s menu."
         case .new, .edit:
-            return "Your instructions are added after SayIt's built-in instructions for this mode."
+            return "Your instructions are added after SayIt’s built-in instructions for this mode."
         }
     }
 

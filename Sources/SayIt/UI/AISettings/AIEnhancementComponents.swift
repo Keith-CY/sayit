@@ -24,7 +24,7 @@ enum AIEnhancementLayout {
 
 enum AIEnhancementCopy {
     static let pageTitle = "AI Enhancement"
-    static let pageSubtitle = "Optionally rewrite what you say before it's inserted — fix punctuation, drop filler words, or follow your own instructions."
+    static let pageSubtitle = "Optionally rewrite what you say before it’s inserted — fix punctuation, drop filler words, or follow your own instructions."
 }
 
 // MARK: - Section Heading
@@ -464,7 +464,7 @@ struct AIEnhancementOverviewCard: View {
                 return (
                     "exclamationmark.triangle.fill",
                     palette.warning,
-                    "On, but \(provider) isn't set up yet, so text is inserted exactly as transcribed."
+                    "On, but \(provider) isn’t set up yet, so text is inserted exactly as transcribed."
                 )
             }
         }()
@@ -501,7 +501,7 @@ struct AISetupGuide: View {
 
     private let steps: [(String, String)] = [
         ("square.grid.2x2", "Choose a provider below."),
-        ("key", "Add its API key. Local providers like Ollama don't need one."),
+        ("key", "Add its API key. Local providers like Ollama don’t need one."),
         ("arrow.clockwise", "Refresh the model list and pick a model."),
         ("checkmark.shield", "Verify the connection."),
         ("text.bubble", "Optionally, choose or write a prompt for each mode."),
@@ -627,7 +627,7 @@ struct AIProviderDisclosureRow<Details: View>: View {
             .onHover { self.isHovered = $0 }
             .accessibilityLabel(self.name)
             .accessibilityValue(self.badges.map(\.title).joined(separator: ", "))
-            .accessibilityHint(self.isExpanded ? "Hides this provider's settings" : "Shows this provider's settings")
+            .accessibilityHint(self.isExpanded ? "Hides this provider’s settings" : "Shows this provider’s settings")
 
             if self.isExpanded {
                 Rectangle()
@@ -780,9 +780,9 @@ struct AIPromptModeHeader: View {
     static func description(for mode: SettingsStore.PromptMode) -> String {
         switch mode.normalized {
         case .dictate:
-            return "Cleans up what you say before it's inserted — tidy prose, emails, terminal commands, translations."
+            return "Cleans up what you say before it’s inserted — tidy prose, emails, terminal commands, translations."
         case .edit, .write, .rewrite:
-            return "Works on the text you've selected — rewrite it, summarize it, answer a question about it, or turn it into a list."
+            return "Works on the text you’ve selected — rewrite it, summarize it, answer a question about it, or turn it into a list."
         }
     }
 }

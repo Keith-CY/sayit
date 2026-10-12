@@ -230,7 +230,7 @@ extension StatusRow where Trailing == EmptyView {
 
 // MARK: - Key Cap
 
-/// Renders a keyboard shortcut as a key cap (“⌥ Right”, “⌘ + K”).
+/// Renders a keyboard shortcut as a key cap (“Right ⌥”, “⌘K”).
 struct KeyCap: View {
     @Environment(\.theme) private var theme
     let text: String

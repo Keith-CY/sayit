@@ -57,7 +57,7 @@ extension AIEnhancementSettingsView {
                         Button("Edit Prompt…") { self.viewModel.openDefaultPromptViewer(for: normalized) }
                         if self.viewModel.hasDefaultPromptOverride(for: normalized) {
                             Divider()
-                            Button("Reset to SayIt's Default…", role: .destructive) {
+                            Button("Reset to SayIt’s Default…", role: .destructive) {
                                 self.pendingDefaultPromptReset = normalized
                             }
                         }

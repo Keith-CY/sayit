@@ -41,7 +41,7 @@ struct AIEnhancementSettingsView: View {
                     self.viewModel.clearPendingDeletePrompt()
                 }
             } message: {
-                Text("Its instructions will be removed. This can't be undone.")
+                Text("Its instructions will be removed. This can’t be undone.")
             }
             .confirmationDialog(
                 self.deleteProviderTitle,

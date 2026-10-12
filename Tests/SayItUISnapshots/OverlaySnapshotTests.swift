@@ -22,7 +22,7 @@ final class OverlaySnapshotTests: XCTestCase {
         ("3-refining", .refining),
         ("4-inserted", .done(.inserted)),
         ("5-no-speech", .done(.noSpeech)),
-        ("6-failed", .failed("Couldn't reach the AI provider. Inserted the original text.")),
+        ("6-failed", .failed("Microphone Access Required")),
         ("7-cancelled", .cancelled),
     ]
 

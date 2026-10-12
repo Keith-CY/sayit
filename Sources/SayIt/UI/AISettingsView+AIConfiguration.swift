@@ -293,7 +293,7 @@ extension AIEnhancementSettingsView {
         case Self.appleIntelligenceUnavailableID:
             AIInlineNotice(
                 kind: .info,
-                text: "Apple Intelligence isn't available on this Mac. Turn it on in System Settings › Apple Intelligence & Siri, then come back to this page."
+                text: "Apple Intelligence isn’t available on this Mac. Turn it on in System Settings › Apple Intelligence & Siri, then come back to this page."
             )
         case Self.appleIntelligenceID:
             VStack(alignment: .leading, spacing: Space.md) {

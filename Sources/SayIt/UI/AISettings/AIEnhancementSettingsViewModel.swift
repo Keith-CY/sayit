@@ -593,7 +593,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         guard let url = URL(string: fullURL) else {
             await MainActor.run {
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = "“\(endpoint)” isn't a valid URL. Check the base URL."
+                self.connectionErrorMessage = "“\(endpoint)” isn’t a valid URL. Check the base URL."
             }
             return
         }
@@ -653,7 +653,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         guard let jsonData = try? JSONSerialization.data(withJSONObject: requestDict, options: []) else {
             await MainActor.run {
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = "SayIt couldn't prepare the verification request. Try again."
+                self.connectionErrorMessage = "SayIt couldn’t prepare the verification request. Try again."
             }
             return
         }
@@ -723,7 +723,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         case 400:
             // Check for specific error patterns in response
             if responseBody.contains("model") {
-                return "\(providerName) doesn't accept the model “\(model)”. Check the model name."
+                return "\(providerName) doesn’t accept the model “\(model)”. Check the model name."
             }
             if responseBody.contains("messages") || responseBody.contains("content") {
                 return "\(providerName) rejected the request format. The base URL may point to a different API."
@@ -732,7 +732,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
         case 401:
             if responseBody.contains("invalid") || responseBody.contains("expired") {
-                return "\(providerName) didn't accept the API key. Check that it's correct and hasn't expired."
+                return "\(providerName) didn’t accept the API key. Check that it’s correct and hasn’t expired."
             }
             if responseBody.contains("missing") {
                 return "Enter your \(providerName) API key."
@@ -756,7 +756,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
         case 422:
             if responseBody.contains("model") {
-                return "“\(model)” isn't valid for \(providerName). Try a different model."
+                return "“\(model)” isn’t valid for \(providerName). Try a different model."
             }
             return "Invalid request parameters for \(providerName). The model or configuration may be incorrect."
 
@@ -784,17 +784,17 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             return "Connection to \(providerName) timed out. Check if the base URL is correct and the service is available."
         case NSURLErrorCannotConnectToHost:
             if providerID == "llamacpp" || providerID == "ollama" || providerID == "lmstudio" {
-                return "Can't connect. Make sure the \(providerName) server is running."
+                return "Can’t connect. Make sure the \(providerName) server is running."
             }
-            return "Can't connect to \(providerName). Check your internet connection and the base URL."
+            return "Can’t connect to \(providerName). Check your internet connection and the base URL."
         case NSURLErrorNetworkConnectionLost:
             return "Network connection lost while connecting to \(providerName). Check your internet connection."
         case NSURLErrorNotConnectedToInternet:
             return "No internet connection. Connect to the internet to verify \(providerName)."
         case NSURLErrorSecureConnectionFailed:
-            return "Secure connection to \(providerName) failed. The server's certificate may be invalid."
+            return "Secure connection to \(providerName) failed. The server’s certificate may be invalid."
         case NSURLErrorCannotFindHost:
-            return "Can't find the server. Check the spelling of the \(providerName) base URL."
+            return "Can’t find the server. Check the spelling of the \(providerName) base URL."
         default:
             return "Network error: \(error.localizedDescription)"
         }
@@ -953,7 +953,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
             await MainActor.run {
                 guard !models.isEmpty else {
-                    self.fetchModelsError = "The provider didn't return any models. Check the base URL and API key."
+                    self.fetchModelsError = "The provider didn’t return any models. Check the base URL and API key."
                     return
                 }
 

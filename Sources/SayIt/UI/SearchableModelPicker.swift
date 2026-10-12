@@ -106,7 +106,7 @@ struct SearchableModelPicker: View {
                     symbol: "tray",
                     title: "No Models Yet",
                     message: self.onRefresh == nil
-                        ? "This provider hasn't listed any models."
+                        ? "This provider hasn’t listed any models."
                         : "Refresh the list to load models from the provider."
                 )
             } else if self.filteredModels.isEmpty {

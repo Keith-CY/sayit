@@ -112,7 +112,7 @@ final class ActivitySnapshotTests: XCTestCase {
                     streamingText: "",
                     thinkingText: "",
                     showThinking: false,
-                    shortcut: "⌃ + ⌥ + C"
+                    shortcut: "⌃⌥C"
                 )
             }
         }

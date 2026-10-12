@@ -977,7 +977,7 @@ final class CommandModeService: ObservableObject {
 
         // Text response only
         return LLMResponse(
-            content: response.content.isEmpty ? "I couldn't understand that." : response.content,
+            content: response.content.isEmpty ? "I couldn’t understand that." : response.content,
             thinking: finalThinking, // Display-only
             toolCall: nil
         )

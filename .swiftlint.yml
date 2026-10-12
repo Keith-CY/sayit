@@ -112,3 +112,8 @@ custom_rules:
     regex: '\.preferredColorScheme\(\.(dark|light)\)'
     message: "Follow the system appearance; overlays use sayItOverlayTheme()."
     severity: error
+  design_typographic_apostrophe:
+    included: "Sources/SayIt/(UI|Views)/"
+    regex: '(Text|Label|Button|title:|message:|text:)\(?"[^"]*[A-Za-z]\x27[A-Za-z]'
+    message: "Use the typographic apostrophe ’ in user-facing text."
+    severity: error
