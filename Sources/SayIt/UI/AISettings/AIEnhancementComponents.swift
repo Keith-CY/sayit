@@ -22,21 +22,9 @@ enum AIEnhancementLayout {
 
 // MARK: - Page Header
 
-struct AIEnhancementPageHeader: View {
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text("AI Enhancement")
-                .font(AppFont.pageTitle)
-                .foregroundStyle(self.theme.palette.primaryText)
-                .accessibilityAddTraits(.isHeader)
-            Text("Optionally rewrite what you say before it's inserted — fix punctuation, drop filler words, or follow your own instructions.")
-                .font(AppFont.callout)
-                .foregroundStyle(self.theme.palette.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
+enum AIEnhancementCopy {
+    static let pageTitle = "AI Enhancement"
+    static let pageSubtitle = "Optionally rewrite what you say before it's inserted — fix punctuation, drop filler words, or follow your own instructions."
 }
 
 // MARK: - Section Heading

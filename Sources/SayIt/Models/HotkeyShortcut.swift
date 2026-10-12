@@ -6,33 +6,52 @@ struct HotkeyShortcut: Codable, Equatable {
     var modifierFlags: NSEvent.ModifierFlags
     enum CodingKeys: String, CodingKey { case keyCode, modifierFlagsRawValue }
 
+    /// Shortcut in the standard macOS notation: modifiers in ⌃⌥⇧⌘ order followed by
+    /// the key, with no separators (e.g. "⌥⌘R"). Modifier-only shortcuts read as
+    /// "Right ⌥".
     var displayString: String {
-        var parts: [String] = []
-        if self.modifierFlags.contains(.function) { parts.append("🌐") }
-        if self.modifierFlags.contains(.command) { parts.append("⌘") }
-        if self.modifierFlags.contains(.option) { parts.append("⌥") }
-        if self.modifierFlags.contains(.control) { parts.append("⌃") }
-        if self.modifierFlags.contains(.shift) { parts.append("⇧") }
-        if let key = Self.keyCodeToString(keyCode) {
-            parts.append(key)
-        } else {
-            parts.append(String(Character(UnicodeScalar(self.keyCode) ?? "?")))
+        let key = Self.keyCodeToString(keyCode)
+            ?? String(Character(UnicodeScalar(self.keyCode) ?? "?"))
+
+        // A modifier-only shortcut already names its key; don't repeat its own flag.
+        var flags = self.modifierFlags
+        if let ownFlag = Self.modifierFlag(forKeyCode: self.keyCode) {
+            flags.remove(ownFlag)
         }
 
-        if self.modifierFlags.isEmpty {
-            return parts.last ?? "Unknown"
-        }
+        var symbols = ""
+        if flags.contains(.function) { symbols += "fn " }
+        if flags.contains(.control) { symbols += "⌃" }
+        if flags.contains(.option) { symbols += "⌥" }
+        if flags.contains(.shift) { symbols += "⇧" }
+        if flags.contains(.command) { symbols += "⌘" }
 
-        return parts.joined(separator: " + ")
+        guard !symbols.isEmpty else { return key }
+        // Word-like keys ("Right ⌥", "Space") read better with a space after the symbols.
+        let separator = key.count > 1 && !Self.symbolKeys.contains(key) ? " " : ""
+        return symbols + separator + key
+    }
+
+    private static let symbolKeys: Set<String> = ["↩", "⇥", "⌫", "⎋", "←", "→", "↓", "↑"]
+
+    private static func modifierFlag(forKeyCode keyCode: UInt16) -> NSEvent.ModifierFlags? {
+        switch keyCode {
+        case 54, 55: return .command
+        case 58, 61: return .option
+        case 59, 62: return .control
+        case 56, 60: return .shift
+        case 63: return .function
+        default: return nil
+        }
     }
 
     static func keyCodeToString(_ keyCode: UInt16) -> String? {
         switch keyCode {
-        case 36: return "Return"
-        case 48: return "Tab"
+        case 36: return "↩"
+        case 48: return "⇥"
         case 49: return "Space"
-        case 51: return "Delete"
-        case 53: return "Escape"
+        case 51: return "⌫"
+        case 53: return "⎋"
         case 55: return "Left ⌘"
         case 54: return "Right ⌘"
         case 58: return "Left ⌥"
@@ -42,10 +61,10 @@ struct HotkeyShortcut: Codable, Equatable {
         case 56: return "Left ⇧"
         case 60: return "Right ⇧"
         case 63: return "fn"
-        case 123: return "Left"
-        case 124: return "Right"
-        case 125: return "Down"
-        case 126: return "Up"
+        case 123: return "←"
+        case 124: return "→"
+        case 125: return "↓"
+        case 126: return "↑"
         case 0: return "A"
         case 1: return "S"
         case 2: return "D"

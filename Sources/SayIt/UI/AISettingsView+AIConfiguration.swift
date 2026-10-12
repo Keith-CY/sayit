@@ -19,8 +19,6 @@ extension AIEnhancementSettingsView {
 
     var enhancementPage: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            AIEnhancementPageHeader()
-
             AIEnhancementOverviewCard(
                 isEnabled: self.$viewModel.enableAIProcessing,
                 summary: self.enhancementSummary

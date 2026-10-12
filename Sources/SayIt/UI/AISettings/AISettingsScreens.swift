@@ -47,7 +47,7 @@ struct AIEnhancementSettingsScreen: View {
     var body: some View {
         SettingsKit.Page(
             title: "AI Enhancement",
-            subtitle: "Optional clean-up of your transcript by an AI model you choose."
+            subtitle: AIEnhancementCopy.pageSubtitle
         ) {
             AIEnhancementSettingsView(
                 viewModel: self.viewModel,

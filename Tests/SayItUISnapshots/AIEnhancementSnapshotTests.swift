@@ -61,7 +61,11 @@ private struct AIEnhancementSpecimenPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
-            AIEnhancementPageHeader()
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text(AIEnhancementCopy.pageTitle).font(AppFont.pageTitle)
+                Text(AIEnhancementCopy.pageSubtitle).font(AppFont.callout)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+            }
             AIEnhancementOverviewCard(isEnabled: .constant(self.scenario != .off), summary: self.summary)
 
             if self.scenario != .off {
