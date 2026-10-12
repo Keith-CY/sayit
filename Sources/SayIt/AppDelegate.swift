@@ -14,6 +14,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         _ = FileLogger.shared
         DebugLogger.shared.info("Application launched", source: "AppDelegate")
 
+        // As a unit-test host, stay out of the user's way: no permission prompts,
+        // no focus stealing, no visible windows.
+        if AppEnvironment.isRunningTests {
+            DispatchQueue.main.async {
+                NSApp.windows.forEach { $0.orderOut(nil) }
+            }
+            return
+        }
+
         // Request accessibility permissions for global hotkey monitoring
         self.requestAccessibilityPermissions()
 
