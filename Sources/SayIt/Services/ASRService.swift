@@ -54,7 +54,12 @@ private actor ModelDownloadRegistry {
         self.tasks[key] = task
         defer { tasks[key] = nil }
 
-        try await task.value
+        // Propagate cancellation from the caller (e.g. Home's Cancel button) to the download.
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 }
 
