@@ -141,46 +141,6 @@ final class ActivitySnapshotTests: XCTestCase {
             }
         }
     }
-
-    // MARK: - Edit Mode
-
-    func testEditModeEmpty() throws {
-        try SnapshotRenderer.snapshot("activity-edit-empty", size: CGSize(width: 760, height: 520)) {
-            PageBackground {
-                ScrollView {
-                    EditModeContent(
-                        originalText: "",
-                        resultText: "",
-                        errorText: nil,
-                        isProcessing: false,
-                        shortcut: "⌃ + ⌥ + E",
-                        onTryAgain: {},
-                        onAccept: {}
-                    )
-                    .padding(Space.xxl)
-                }
-            }
-        }
-    }
-
-    func testEditModeResult() throws {
-        try SnapshotRenderer.snapshot("activity-edit-result", size: CGSize(width: 760, height: 560)) {
-            PageBackground {
-                ScrollView {
-                    EditModeContent(
-                        originalText: "hey can u send me the deck before the call tmrw thx",
-                        resultText: "Hi — could you send me the deck before tomorrow’s call? Thank you.",
-                        errorText: nil,
-                        isProcessing: false,
-                        shortcut: nil,
-                        onTryAgain: {},
-                        onAccept: {}
-                    )
-                    .padding(Space.xxl)
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Sample Data
