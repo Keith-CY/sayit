@@ -27,7 +27,7 @@ Every touchpoint shows the same transformation — sound turning into words.
 | --- | --- |
 | Type | Interface chrome is set in SF Pro. Words the user has spoken (transcripts, previews, history) are set in **New York**, the system serif, so spoken output reads as *written*. |
 | Overlay | A live level meter while listening; when work finishes the meter resolves into a single mark (✓ inserted, ! failed) before leaving. |
-| Menu bar | Waveform frames while recording, writing frames while working (`menubar_wave_*`, `menubar_write_*`). |
+| Menu bar | A static waveform frame while recording and a writing frame while working (`menubar_wave_*`, `menubar_write_*`). It does not loop: while the overlay is up, the overlay's meter is the one moving element. |
 | Home | Hero line in New York: “Say it, and it's written.” The test area shows the transcript in serif as it arrives. |
 | Color | One accent (user-selectable) marks the path forward; status colors have fixed meanings. Everything else is neutral, so the words are the loudest thing on screen. |
 
@@ -124,6 +124,15 @@ bottom styles.
 - Working states keep the transcript visible at reduced emphasis and show the status
   on its own line.
 - Terminal states stay for `Motion.outcomeDwell` (1.1s) so they can be read, then exit.
+  If the overlay had already left, it returns briefly for anything the user must know
+  (failed, no speech, original text inserted, copied instead of typed) — not for a plain
+  successful insert.
+- Cancelling while transcribing or enhancing discards the result: nothing is typed,
+  copied or saved (`NotchContentState.cancellationCount`).
+- The overlay appears on the screen of the app that will receive the text, falling back
+  to the screen under the pointer.
+- Mode glyphs: Dictate `mic`, Edit `pencil.line`, Command `terminal`; the glyph
+  always pairs with the mode name, never color alone.
 - Esc cancels from any phase while the overlay is visible; Esc is never consumed when
   the overlay is hidden. The close button does the same.
 - Every phase change is announced to VoiceOver (`OverlayPhase.announce()`).

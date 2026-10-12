@@ -75,9 +75,4 @@ extension Color {
         guard let rgb = RGBColor(hex: hex) else { return nil }
         self = rgb.color
     }
-
-    @available(*, deprecated, message: "Read the accent from the environment: theme.palette.accent")
-    static var fluidGreen: Color {
-        SettingsStore.shared.accentColor
-    }
 }

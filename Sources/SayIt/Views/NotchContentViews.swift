@@ -24,8 +24,14 @@ class NotchContentState: ObservableObject {
     @Published var phase: OverlayPhase = .idle
     /// When `phase` last changed; used to keep terminal phases on screen long enough to read.
     private(set) var phaseChangedAt = Date.distantPast
+    /// Bumped on every cancel. Pipeline work captures it when it starts and must not
+    /// deliver text if it changed (the user pressed Esc while SayIt was still working).
+    private(set) var cancellationCount: UInt64 = 0
 
     func setPhase(_ phase: OverlayPhase) {
+        if phase == .cancelled {
+            self.cancellationCount &+= 1
+        }
         guard phase != self.phase else { return }
         self.phase = phase
         self.phaseChangedAt = Date()

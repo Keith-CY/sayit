@@ -37,6 +37,12 @@ enum Motion {
     /// Half-cycle of an ambient loop (sine-shaped, autoreversing).
     static let ambient = Animation.timingCurve(0.37, 0, 0.63, 1, duration: Motion.ambientPeriod / 2)
 
+    /// Level meter response: quick, no overshoot, so the meter never "bounces".
+    static let meter = Animation.spring(response: 0.14, dampingFraction: 0.9)
+    /// Grace period after work ends during which the pipeline can report an outcome
+    /// before the overlay leaves on its own.
+    static let outcomeGrace: Double = 0.45
+
     /// The system-wide Reduce Motion preference, for AppKit and non-View code.
     static var prefersReducedMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -126,4 +132,14 @@ private struct AmbientPulseModifier: ViewModifier {
             withTransaction(transaction) { self.isDimmed = false }
         }
     }
+}
+
+/// AppKit timing functions with the same control points as the `Motion` curves,
+/// for window-level (NSAnimationContext) animations.
+enum OverlayWindowMotion {
+    static var enter: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1) }
+    static var exit: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.7, 0, 0.84, 0) }
+    static var fade: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1) }
+    /// Distance a window rises while entering.
+    static let enterOffset: CGFloat = 8
 }

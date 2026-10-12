@@ -162,6 +162,7 @@ struct OverlayPalette {
     let command = Color(red: 0.98, green: 0.72, blue: 0.30)
 
     let success = Color(nsColor: .systemGreen)
+    let warning = Color(nsColor: .systemOrange)
     let error = Color(nsColor: .systemRed)
     let recording = Color(nsColor: .systemRed)
 

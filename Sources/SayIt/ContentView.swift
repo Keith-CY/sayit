@@ -1320,6 +1320,11 @@ struct ContentView: View {
 
     // MARK: - Stop and Process Transcription
 
+    /// True when the user cancelled (Esc / close button) after `token` was captured.
+    private func wasCancelled(since token: UInt64) -> Bool {
+        NotchContentState.shared.cancellationCount != token
+    }
+
     private func stopAndProcessTranscription() async {
         DebugLogger.shared.debug("stopAndProcessTranscription called", source: "ContentView")
 
@@ -1333,6 +1338,7 @@ struct ContentView: View {
         )
 
         self.clearActiveRecordingMode()
+        let cancelToken = NotchContentState.shared.cancellationCount
 
         // Keep the overlay visible in its “Transcribing” phase while asr.stop() finalizes;
         // slower models (Whisper Medium/Large) can take a moment.
@@ -1347,6 +1353,12 @@ struct ContentView: View {
         // Stop the ASR service and wait for transcription to complete
         // The processing indicator will stay visible during this phase
         let transcribedText = await asr.stop()
+
+        if self.wasCancelled(since: cancelToken) {
+            DebugLogger.shared.info("Dictation cancelled while transcribing; discarding text", source: "ContentView")
+            self.menuBarManager.setProcessing(false)
+            return
+        }
 
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
@@ -1455,6 +1467,12 @@ struct ContentView: View {
             }
         } else {
             finalText = transcribedText
+        }
+
+        if self.wasCancelled(since: cancelToken) {
+            DebugLogger.shared.info("Dictation cancelled while enhancing; discarding text", source: "ContentView")
+            self.menuBarManager.setProcessing(false)
+            return
         }
 
         // Apply GAAV formatting as the FINAL step (after AI post-processing)
@@ -1687,6 +1705,7 @@ struct ContentView: View {
 
         self.setActiveRecordingMode(.dictate)
         self.menuBarManager.setProcessing(true)
+        let cancelToken = NotchContentState.shared.cancellationCount
         NotchOverlayManager.shared.updateTranscriptionText(transcribedText)
         NotchOverlayManager.shared.present(.refining)
         await Task.yield()
@@ -1705,6 +1724,12 @@ struct ContentView: View {
                 )
                 aiFailed = true
             }
+        }
+
+        if self.wasCancelled(since: cancelToken) {
+            self.menuBarManager.setProcessing(false)
+            self.clearActiveRecordingMode()
+            return
         }
 
         NotchOverlayManager.shared.present(.done(aiFailed ? .insertedOriginal : .inserted))
@@ -1752,12 +1777,20 @@ struct ContentView: View {
 
         // Show processing animation
         self.menuBarManager.setProcessing(true)
+        let cancelToken = NotchContentState.shared.cancellationCount
         NotchOverlayManager.shared.present(.refining)
 
         // Process the request - service handles both cases:
         // - With originalText: rewrites existing text based on instruction
         // - Without originalText: improves/refines the spoken text
         await self.rewriteModeService.processRewriteRequest(instruction)
+
+        if self.wasCancelled(since: cancelToken) {
+            DebugLogger.shared.info("Edit cancelled while processing; not replacing text", source: "ContentView")
+            self.menuBarManager.setProcessing(false)
+            self.rewriteModeService.clearState()
+            return
+        }
 
         let succeeded = !self.rewriteModeService.rewrittenText.isEmpty
         NotchOverlayManager.shared.present(succeeded ? .done(.inserted) : .failed("Couldn’t Edit Text"))

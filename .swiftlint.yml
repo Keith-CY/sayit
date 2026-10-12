@@ -74,3 +74,41 @@ custom_rules:
   enforce_mark_spacing:
     regex: '\/\/ MARK:(?! - )'
     message: "Format section markers as `// MARK: - Section`."
+  # Design system guards (docs/design/DESIGN.md). Tokens live in Sources/SayIt/Theme.
+  design_font_tokens:
+    included: "Sources/SayIt/"
+    excluded: "Sources/SayIt/Theme/"
+    regex: '\.system\(size:|\.font\(\.(largeTitle|title|title2|title3|headline|subheadline|body|callout|footnote|caption|caption2)\b'
+    message: "Use AppFont tokens instead of font literals."
+    severity: error
+  design_color_tokens:
+    included: "Sources/SayIt/(UI|Views)/"
+    regex: 'Color\((red|white|hue):|NSColor\(red:|fluidGreen'
+    message: "Use theme.palette or theme.overlay colors."
+    severity: error
+  design_motion_tokens:
+    included: "Sources/SayIt/"
+    excluded: "Sources/SayIt/Theme/Motion\\.swift"
+    regex: '\bwithAnimation\b|\.easeInOut\b|\.repeatForever\(|\.animation\(\.(linear|default|easeIn|easeOut|spring|interpolatingSpring)'
+    message: "Use Motion tokens: withMotion, .motion(_:value:), .motionTransition(), .ambientPulse()."
+    severity: error
+  design_labeled_controls:
+    included: "Sources/SayIt/"
+    regex: '(Toggle|Picker|TextField|SecureField)\(""'
+    message: "Give controls a real label so VoiceOver can name them."
+    severity: error
+  design_buttons_not_taps:
+    included: "Sources/SayIt/(UI|Views)/"
+    regex: '\.onTapGesture\b'
+    message: "Use a Button so the control works with the keyboard and VoiceOver."
+    severity: error
+  design_typographic_ellipsis:
+    included: "Sources/SayIt/(UI|Views)/"
+    regex: '(Text|Label|Button)\("[^"]*\.\.\.'
+    message: "Use the ellipsis character “…” in user-facing text."
+    severity: error
+  design_system_appearance:
+    included: "Sources/SayIt/"
+    regex: '\.preferredColorScheme\(\.(dark|light)\)'
+    message: "Follow the system appearance; overlays use sayItOverlayTheme()."
+    severity: error

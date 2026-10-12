@@ -10,37 +10,6 @@ import AppKit
 import Combine
 import SwiftUI
 
-// MARK: - Overlay Tokens
-
-extension OverlayPalette {
-    var warning: Color { Color(nsColor: .systemOrange) }
-}
-
-extension Motion {
-    /// Level meter response: quick, no overshoot, so the meter never "bounces".
-    static let meter = Animation.spring(response: 0.14, dampingFraction: 0.9)
-    /// Grace period after work ends during which the pipeline can report an outcome
-    /// before the overlay leaves on its own.
-    static let outcomeGrace: Double = 0.45
-}
-
-extension AppFont.Overlay {
-    /// Transcript size for the large bottom overlay.
-    static let transcriptLarge = Font.system(size: 15, weight: .regular, design: .serif)
-    /// Menu rows in overlay pop-up menus.
-    static let menuRow = Font.system(size: 13, weight: .medium)
-}
-
-/// AppKit timing functions with the same control points as the `Motion` curves,
-/// for window-level (NSAnimationContext) animations.
-enum OverlayWindowMotion {
-    static var enter: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1) }
-    static var exit: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.7, 0, 0.84, 0) }
-    static var fade: CAMediaTimingFunction { CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1) }
-    /// Distance a window rises while entering.
-    static let enterOffset: CGFloat = 8
-}
-
 // MARK: - Overlay Mode Presentation
 
 extension OverlayMode {

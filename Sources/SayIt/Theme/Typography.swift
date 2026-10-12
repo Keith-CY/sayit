@@ -44,6 +44,10 @@ enum AppFont {
         static let status = Font.system(size: 11, weight: .semibold)
         static let transcript = Font.system(size: 13, weight: .regular, design: .serif)
         static let transcriptCompact = Font.system(size: 12, weight: .regular, design: .serif)
+        /// Transcript size for the large bottom overlay.
+        static let transcriptLarge = Font.system(size: 15, weight: .regular, design: .serif)
+        /// Menu rows in overlay pop-up menus.
+        static let menuRow = Font.system(size: 13, weight: .medium)
         static let label = Font.system(size: 11, weight: .medium)
         static let keyCap = Font.system(size: 10, weight: .semibold, design: .rounded)
         static let icon = Font.system(size: 12, weight: .medium)

@@ -455,7 +455,7 @@ final class NotchOverlayManager {
             .replacingOccurrences(of: "…", with: "...")
         switch normalized {
         case "Transcribing...": return .transcribing
-        case "Refining...", "Reprocessing...", "Thinking...", "Working...": return .refining
+        case "Refining...", "Reprocessing...", "Thinking...", "Thinking…", "Working...": return .refining
         default: return nil
         }
     }

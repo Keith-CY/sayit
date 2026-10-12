@@ -6,7 +6,6 @@ enum AppIdentity {
     static let displayName = "SayIt"
     static let legacyDisplayName = "SayIt"
     static let menuStatusReady = "Ready to Record"
-    static let menuStatusRecording = "Recording..."
     static let menuOpenItem = "Open \(displayName)"
     static let menuQuitItem = "Quit \(displayName)"
 
