@@ -5,6 +5,7 @@ This folder contains reference notes for future work.
 - `build.sh` performs a pinned, non-signing Debug build by default. Set `LAUNCH_APP=1` to open the result.
 - `build_incremental.sh` is the shorthand for the same safe incremental build.
 - Add architecture or testing notes here only when they materially affect implementation.
+- UI work follows the [design spec](design/DESIGN.md) and its [references](design/REFERENCES.md).
 - Keep documentation concise and aligned with current source behavior.
 
 ## Provider Compatibility Notes
