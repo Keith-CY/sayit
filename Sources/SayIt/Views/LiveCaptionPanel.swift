@@ -126,9 +126,11 @@ struct LiveCaptionPanelView: View {
     @ObservedObject private var service = LiveCaptionService.shared
 
     var body: some View {
-        LiveCaptionContent(state: self.service.viewState) {
-            self.service.stop()
-        }
+        LiveCaptionContent(
+            state: self.service.viewState,
+            onToggleMicrophone: { self.service.setMicrophoneEnabled(self.service.viewState.microphone == .off) },
+            onClose: { self.service.stop() }
+        )
         .sayItOverlayTheme()
     }
 }
@@ -136,6 +138,7 @@ struct LiveCaptionPanelView: View {
 struct LiveCaptionContent: View {
     @Environment(\.theme) private var theme
     let state: LiveCaptionViewState
+    var onToggleMicrophone: () -> Void = {}
     var onClose: () -> Void = {}
 
     private static let privacySettingsURL = URL(
@@ -174,13 +177,23 @@ struct LiveCaptionContent: View {
                 .labelStyle(.titleAndIcon)
             Text("·")
                 .accessibilityHidden(true)
-            Label("Mac Audio", systemImage: "speaker.wave.2")
+            Label("Mac Audio", systemImage: Self.glyph(for: .macAudio))
                 .labelStyle(.titleAndIcon)
             Spacer(minLength: Space.sm)
+            if self.state.phase == .listening {
+                MicrophoneToggle(state: self.state.microphone, action: self.onToggleMicrophone)
+            }
             IconButton("Turn Off Live Captions", systemName: "xmark", size: 22, action: self.onClose)
         }
         .font(AppFont.Overlay.label)
         .foregroundStyle(self.theme.overlay.tertiaryText)
+    }
+
+    static func glyph(for source: LiveCaptionSource) -> String {
+        switch source {
+        case .macAudio: return "speaker.wave.2"
+        case .microphone: return "mic"
+        }
     }
 
     // MARK: - Content
@@ -193,48 +206,55 @@ struct LiveCaptionContent: View {
         case let .failed(failure):
             self.failure(failure)
         case .listening:
-            if self.state.lines.isEmpty, self.state.volatileText.isEmpty {
-                if self.state.showsSilenceHint {
-                    self.message(
-                        "Nothing has played yet",
-                        detail: "If something is playing, allow SayIt in Screen & System Audio Recording.",
-                        settingsButton: true
-                    )
-                } else {
-                    self.message(
-                        "Listening to your Mac’s audio…",
-                        detail: "Captions appear here when something with speech plays.",
-                        pulsing: true
-                    )
-                }
-            } else {
+            if !self.state.rows.isEmpty {
                 self.captions
+            } else if self.state.showsSilenceHint {
+                self.message(
+                    "Nothing has played yet",
+                    detail: "If something is playing, allow SayIt in Screen & System Audio Recording.",
+                    settingsButton: true
+                )
+            } else if self.state.microphone == .on {
+                self.message(
+                    "Listening to your Mac and your microphone…",
+                    detail: "Captions appear here when someone speaks.",
+                    pulsing: true
+                )
+            } else {
+                self.message(
+                    "Listening to your Mac’s audio…",
+                    detail: "Captions appear here when something with speech plays.",
+                    pulsing: true
+                )
             }
         }
     }
 
     private var captions: some View {
-        let lines = Array(self.state.lines.suffix(LiveCaptionLayout.visibleLines))
-        let lastID = lines.last?.id
-        // Forming words continue the open line, or start their own after a closed one.
-        let volatileOnOwnLine = lines.last.map { $0.state != .open } ?? true
+        let rows = Array(self.state.rows.suffix(LiveCaptionLayout.visibleLines))
+        // Mark where each line came from once the microphone is in the mix.
+        let showsSources = self.state.microphone == .on || rows.contains { $0.source == .microphone }
 
         return VStack(alignment: .leading, spacing: Space.xs) {
-            ForEach(lines) { line in
-                self.captionText(line, volatile: line.id == lastID && !volatileOnOwnLine ? self.state.volatileText : "")
-                    .motionTransition()
-            }
-            if volatileOnOwnLine, !self.state.volatileText.isEmpty {
-                Text(self.state.volatileText)
-                    .foregroundStyle(self.theme.overlay.tertiaryText)
-                    .motionTransition()
+            ForEach(rows) { row in
+                HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                    if showsSources {
+                        Image(systemName: Self.glyph(for: row.source))
+                            .font(AppFont.LiveCaption.sourceIcon)
+                            .foregroundStyle(self.theme.overlay.tertiaryText)
+                            .frame(width: Space.lg)
+                            .accessibilityLabel(row.source == .microphone ? "You" : "Mac Audio")
+                    }
+                    self.captionText(row)
+                }
+                .motionTransition()
             }
         }
         .font(AppFont.LiveCaption.text)
         .lineSpacing(Space.xxs)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .motion(Motion.state, value: lines.map(\.id))
+        .motion(Motion.state, value: rows.map(\.id))
         // minHeight 0 lets the area be shorter than its lines, so older ones scroll off.
         .frame(minHeight: 0, maxHeight: .infinity, alignment: .bottomLeading)
         .clipped()
@@ -252,15 +272,12 @@ struct LiveCaptionContent: View {
 
     /// Settled words in full ink; words that may still change (Apple's draft, awaiting
     /// Qwen) one step quieter; the forming tail quieter still.
-    private func captionText(_ line: LiveCaptionTranscript.Line, volatile: String) -> some View {
-        let ink = line.isDraft ? self.theme.overlay.secondaryText : self.theme.overlay.primaryText
-        let tail = volatile.isEmpty
-            ? ""
-            : String(LiveCaptionTranscript.join(line.text, volatile).dropFirst(line.text.count))
-        return (Text(line.text).foregroundStyle(ink) + Text(tail).foregroundStyle(self.theme.overlay.tertiaryText))
+    private func captionText(_ row: LiveCaptionViewState.Row) -> some View {
+        let ink = row.isDraft ? self.theme.overlay.secondaryText : self.theme.overlay.primaryText
+        return (Text(row.text).foregroundStyle(ink) + Text(row.formingTail).foregroundStyle(self.theme.overlay.tertiaryText))
             .contentTransition(.opacity)
-            .motion(Motion.state, value: line.text)
-            .motion(Motion.state, value: line.state)
+            .motion(Motion.state, value: row.text)
+            .motion(Motion.state, value: row.isDraft)
     }
 
     // MARK: - Messages
@@ -317,6 +334,79 @@ struct LiveCaptionContent: View {
         }
         .frame(maxHeight: .infinity, alignment: .center)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Turns the microphone source on and off. Off by default: an open microphone puts
+/// AirPods in call mode, which lowers playback quality.
+private struct MicrophoneToggle: View {
+    let state: LiveCaptionViewState.Microphone
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: self.action) {
+            Label("Microphone", systemImage: self.glyph)
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(LiveCaptionChipStyle(isOn: self.state == .on, isWarning: self.state == .unavailable))
+        .help(self.help)
+        .accessibilityValue(self.state == .off ? "Off" : "On")
+    }
+
+    private var glyph: String {
+        switch self.state {
+        case .off: return "mic.slash"
+        case .on: return "mic"
+        case .unavailable: return "exclamationmark.triangle"
+        }
+    }
+
+    private var help: String {
+        switch self.state {
+        case .off: return "Also caption what you say"
+        case .on: return "Stop captioning your microphone"
+        case .unavailable: return "SayIt can’t use the microphone. Allow it in Privacy & Security → Microphone, then turn it on again."
+        }
+    }
+}
+
+/// Overlay chip with an on state (raised fill, full ink) and a warning state.
+private struct LiveCaptionChipStyle: ButtonStyle {
+    let isOn: Bool
+    let isWarning: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Chip(configuration: configuration, isOn: self.isOn, isWarning: self.isWarning)
+    }
+
+    private struct Chip: View {
+        @Environment(\.theme) private var theme
+        @State private var isHovered = false
+        let configuration: ButtonStyle.Configuration
+        let isOn: Bool
+        let isWarning: Bool
+
+        var body: some View {
+            let shape = RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            let active = self.isHovered || self.configuration.isPressed
+            self.configuration.label
+                .font(AppFont.Overlay.label)
+                .foregroundStyle(self.foreground)
+                .lineLimit(1)
+                .padding(.horizontal, Space.sm)
+                .padding(.vertical, Space.xs)
+                .background(shape.fill(active ? self.theme.overlay.surfaceHover : self.isOn ? self.theme.overlay.surfaceRaised : self.theme.overlay.surface))
+                .overlay(shape.strokeBorder(self.theme.overlay.hairline, lineWidth: 1))
+                .contentShape(shape)
+                .onHover { self.isHovered = $0 }
+                .motion(Motion.snappy, value: active)
+                .motion(Motion.state, value: self.isOn)
+        }
+
+        private var foreground: Color {
+            if self.isWarning { return self.theme.overlay.warning }
+            return self.isOn ? self.theme.overlay.primaryText : self.theme.overlay.secondaryText
+        }
     }
 }
 

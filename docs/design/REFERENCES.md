@@ -55,7 +55,9 @@ comparison only; we do not copy layouts, copy or assets.
   handles mixed Chinese and English, or whether words change after they appear.
 - **SayIt must:** caption mixed Chinese–English speech accurately (each line is
   re-transcribed by Qwen), and show which words may still change instead of silently
-  rewriting text the viewer is reading.
+  rewriting text the viewer is reading. Apple switches between Computer Audio and
+  Microphone; SayIt captions both at once, marks whose words each line is, and never
+  captions the speakers' sound twice.
 
 ## Motion (unverified — shot pages blocked automated fetch)
 

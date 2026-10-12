@@ -28,6 +28,7 @@ final class SettingsStore: ObservableObject {
     // Keys
     private enum Keys {
         static let enableAIProcessing = "EnableAIProcessing"
+        static let liveCaptionsIncludeMicrophone = "LiveCaptionsIncludeMicrophone"
         static let availableAIModels = "AvailableAIModels"
         static let availableModelsByProvider = "AvailableModelsByProvider"
         static let selectedAIModel = "SelectedAIModel"
@@ -725,6 +726,16 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.enableAIProcessing)
+        }
+    }
+
+    /// Live Captions also caption the microphone (off by default: an open microphone puts
+    /// AirPods in call mode, which lowers playback quality).
+    var liveCaptionsIncludeMicrophone: Bool {
+        get { self.defaults.bool(forKey: Keys.liveCaptionsIncludeMicrophone) }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.liveCaptionsIncludeMicrophone)
         }
     }
 

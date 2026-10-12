@@ -457,13 +457,7 @@ final class DictationE2ETests: XCTestCase {
     /// system audio tap → Apple draft → lines → Qwen refinement.
     @MainActor
     func testLiveCaptionsEndToEnd_captionsSpeechPlayedByTheMac() async throws {
-        guard ProcessInfo.processInfo.environment["RUN_LIVE_CAPTION_E2E_TESTS"] == "1" else {
-            throw XCTSkip("Set RUN_LIVE_CAPTION_E2E_TESTS=1 to play speech aloud and caption it.")
-        }
-        guard LiveCaptionService.isSupported else { throw XCTSkip("Live Captions need macOS 26.") }
-
-        let service = LiveCaptionService.shared
-        service.start()
+        let service = try Self.startLiveCaptions(env: "RUN_LIVE_CAPTION_E2E_TESTS")
         defer { service.stop() }
         try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
         XCTAssertEqual(service.viewState.phase, .listening)
@@ -477,19 +471,17 @@ final class DictationE2ETests: XCTestCase {
             try await Task.sleep(for: .seconds(1.5))
         }
         try await Self.waitUntil(timeout: 30) {
-            let lines = service.viewState.lines
-            return lines.count >= 2 && !lines.contains(where: \.isDraft)
+            let rows = service.viewState.rows
+            return rows.count >= 2 && !rows.contains(where: \.isDraft)
         }
 
-        let lines = service.viewState.lines
-        for line in lines {
-            print("LIVE_CAPTION_E2E_LINE state=\(line.state) audio=\(line.start)-\(line.end) text=\(line.text)")
-        }
+        let rows = service.viewState.rows
+        Self.printRows(rows, prefix: "LIVE_CAPTION_E2E")
         print("LIVE_CAPTION_E2E_SECONDS=\(Date().timeIntervalSince(started))")
-        let joined = lines.map(\.text).joined(separator: " ")
+        let joined = rows.map(\.text).joined(separator: " ")
         let text = Self.normalize(joined)
-        XCTAssertGreaterThanOrEqual(lines.count, 2, "The pause between the two sentences should split them")
-        XCTAssertTrue(lines.contains { $0.state == .refined }, "At least one line should come from Qwen")
+        XCTAssertGreaterThanOrEqual(rows.count, 2, "The pause between the two sentences should split them")
+        XCTAssertTrue(rows.contains(where: \.isRefined), "At least one line should come from Qwen")
         XCTAssertTrue(
             joined.unicodeScalars.contains { (0x4E00 ... 0x9FFF).contains(Int($0.value)) },
             "Chinese speech must stay Chinese, not be translated: \(joined)"
@@ -499,17 +491,73 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    /// The microphone hears exactly what the Mac plays (speakers, no headphones): those
+    /// words are already captioned, so no microphone line may appear.
+    @MainActor
+    func testLiveCaptionsEndToEnd_dropsSpeakerSoundHeardByTheMicrophone() async throws {
+        guard #available(macOS 14.2, *) else { throw XCTSkip("Needs macOS 14.2") }
+        let service = try Self.startLiveCaptions(env: "RUN_LIVE_CAPTION_E2E_TESTS", microphone: { EchoMicrophone(onSamples: $0) })
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
+
+        for (voice, text) in [
+            ("Tingting", "请帮我 review 这个 pull request，然后 deploy 到 staging。"),
+            ("Samantha", "Live captions now refine every line on this Mac."),
+        ] {
+            try await Self.say(text, voice: voice)
+            try await Task.sleep(for: .seconds(1.5))
+        }
+        try await Self.waitUntil(timeout: 30) {
+            let rows = service.viewState.rows
+            return rows.filter { $0.source == .macAudio }.count >= 2 && !rows.contains(where: \.isDraft)
+        }
+        // Give the microphone's lines time to close and be checked.
+        try await Task.sleep(for: .seconds(5))
+
+        let rows = service.viewState.rows
+        Self.printRows(rows, prefix: "LIVE_CAPTION_ECHO")
+        XCTAssertEqual(service.viewState.microphone, .on)
+        XCTAssertEqual(rows.filter { $0.source == .microphone }.map(\.text), [], "Speaker sound must not be captioned twice")
+        XCTAssertGreaterThanOrEqual(rows.filter { $0.source == .macAudio }.count, 2)
+    }
+
+    /// The user speaks while the Mac is quiet, between two things the Mac plays: their line
+    /// is kept, marked as theirs, and ordered between the Mac's lines.
+    @MainActor
+    func testLiveCaptionsEndToEnd_captionsTheMicrophoneBetweenMacAudio() async throws {
+        let feed = MicrophoneFeed()
+        let service = try Self.startLiveCaptions(
+            env: "RUN_LIVE_CAPTION_E2E_TESTS",
+            microphone: { FakeMicrophone(feed: feed, onSamples: $0) }
+        )
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
+        let reply = try await Self.render("Sounds good. I will send the draft on Monday.", voice: "Samantha")
+
+        try await Self.say("我们这周先把迁移指南写完。", voice: "Tingting")
+        try await Task.sleep(for: .seconds(1.5))
+        feed.play(reply)
+        try await Task.sleep(for: .seconds(Double(reply.count) / 16000 + 1.5))
+        try await Self.say("好的，那就周一见。", voice: "Tingting")
+
+        try await Self.waitUntil(timeout: 30) {
+            let rows = service.viewState.rows
+            return rows.count >= 3 && !rows.contains(where: \.isDraft)
+        }
+        let rows = service.viewState.rows
+        Self.printRows(rows, prefix: "LIVE_CAPTION_MIC")
+        XCTAssertEqual(rows.map(\.source), [.macAudio, .microphone, .macAudio])
+        let replyText = Self.normalize(rows.first { $0.source == .microphone }?.text ?? "")
+        for term in ["draft", "monday"] {
+            XCTAssertTrue(replyText.contains(term), "Missing '\(term)' in: \(replyText)")
+        }
+    }
+
     /// About a minute of alternating Chinese and English speech, for measuring what Live
     /// Captions cost while running (sample the process from outside while it plays).
     @MainActor
     func testLiveCaptionsSoak_aMinuteOfSpeech() async throws {
-        guard ProcessInfo.processInfo.environment["RUN_LIVE_CAPTION_SOAK_TESTS"] == "1" else {
-            throw XCTSkip("Set RUN_LIVE_CAPTION_SOAK_TESTS=1 to play a minute of speech aloud and caption it.")
-        }
-        guard LiveCaptionService.isSupported else { throw XCTSkip("Live Captions need macOS 26.") }
-
-        let service = LiveCaptionService.shared
-        service.start()
+        let service = try Self.startLiveCaptions(env: "RUN_LIVE_CAPTION_SOAK_TESTS")
         defer { service.stop() }
         try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
 
@@ -531,21 +579,49 @@ final class DictationE2ETests: XCTestCase {
             try await Task.sleep(for: .seconds(1))
         }
         let spoken = Date().timeIntervalSince(started)
-        try await Self.waitUntil(timeout: 30) { !service.viewState.lines.contains(where: \.isDraft) }
+        try await Self.waitUntil(timeout: 30) { !service.viewState.rows.contains(where: \.isDraft) }
 
-        let lines = service.viewState.lines
-        for line in lines {
-            print("LIVE_CAPTION_SOAK_LINE state=\(line.state) audio=\(line.start)-\(line.end) text=\(line.text)")
+        let rows = service.viewState.rows
+        Self.printRows(rows, prefix: "LIVE_CAPTION_SOAK")
+        print("LIVE_CAPTION_SOAK_SPOKEN_SECONDS=\(spoken) LINES=\(rows.count) REFINED=\(rows.filter(\.isRefined).count)")
+        XCTAssertGreaterThanOrEqual(rows.filter(\.isRefined).count, script.count / 2)
+    }
+
+    /// Starts Live Captions when `env` is set, with the microphone on only when given one.
+    @MainActor
+    private static func startLiveCaptions(env: String, microphone: CaptionSourceFactory? = nil) throws -> LiveCaptionService {
+        guard ProcessInfo.processInfo.environment[env] == "1" else {
+            throw XCTSkip("Set \(env)=1 to play speech aloud and caption it.")
         }
-        print("LIVE_CAPTION_SOAK_SPOKEN_SECONDS=\(spoken) LINES=\(lines.count) REFINED=\(lines.filter { $0.state == .refined }.count)")
-        XCTAssertGreaterThanOrEqual(lines.filter { $0.state == .refined }.count, script.count / 2)
+        guard LiveCaptionService.isSupported else { throw XCTSkip("Live Captions need macOS 26.") }
+        let service = LiveCaptionService.shared
+        service.start(includeMicrophone: microphone != nil, makeMicrophone: microphone)
+        return service
+    }
+
+    private static func printRows(_ rows: [LiveCaptionViewState.Row], prefix: String) {
+        for row in rows {
+            print("\(prefix)_LINE source=\(row.source.rawValue) refined=\(row.isRefined) text=\(row.text)")
+        }
     }
 
     private static func say(_ text: String, voice: String) async throws {
+        try await self.runSay(["-v", voice, text])
+    }
+
+    /// Speech rendered to 16 kHz mono samples instead of played.
+    private static func render(_ text: String, voice: String) async throws -> [Float] {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("sayit-\(UUID().uuidString).aiff")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try await self.runSay(["-v", voice, "-o", url.path, text])
+        return try AudioFixtureLoader.load16kMonoFloatSamples(from: url)
+    }
+
+    private static func runSay(_ arguments: [String]) async throws {
         try await Task.detached {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-            process.arguments = ["-v", voice, text]
+            process.arguments = arguments
             try process.run()
             process.waitUntilExit()
         }.value
@@ -560,8 +636,29 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testLiveCaptionEcho_recognizesTheSameWordsHeardTwice() {
+        // Two recognitions of the same sound differ in spacing, punctuation and a word or two.
+        XCTAssertTrue(LiveCaptionEcho.isEcho("请帮我 review这个 porequest", of: "请帮我 review 这个 pull request，然后 deploy 到 staging。"))
+        XCTAssertTrue(LiveCaptionEcho.isEcho("Life captions nor refine every line", of: "Live captions now refine every line on this Mac."))
+        XCTAssertFalse(LiveCaptionEcho.isEcho("Sounds good, I will send the draft on Monday.", of: "我们这周先把迁移指南写完。"))
+        XCTAssertFalse(LiveCaptionEcho.isEcho("下周一发，我今天先写初稿。", of: "So when does the migration guide go out?"))
+        XCTAssertFalse(LiveCaptionEcho.isEcho("Anything", of: ""))
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_textOverlappingATimeRange() {
+        var transcript = LiveCaptionTranscript()
+        _ = transcript.applyFinal("first", start: 0, end: 2)
+        _ = transcript.applyFinal("second", start: 4, end: 6)
+        _ = transcript.applyVolatile("third", start: 7)
+        XCTAssertEqual(transcript.text(overlapping: 3...5), "second")
+        XCTAssertEqual(transcript.text(overlapping: 1...8), "first second third")
+        transcript.remove(0)
+        XCTAssertEqual(transcript.lines.map(\.text), ["second"])
+    }
+
     func testCaptionAudioTimeline_slicesByTimeAndRefusesDiscardedAudio() throws {
-        guard #available(macOS 14.2, *) else { throw XCTSkip("Needs macOS 14.2") }
         let timeline = CaptionAudioTimeline()
         timeline.append([Float](repeating: 0, count: 16000 * 8))
         XCTAssertFalse(timeline.hasHeardSound)
@@ -571,6 +668,8 @@ final class DictationE2ETests: XCTestCase {
 
         XCTAssertEqual(timeline.samples(from: 8, to: 9).count, 16000)
         XCTAssertEqual(timeline.samples(from: 9.5, to: 12).count, 8000, "Clamped to what was captured")
+        XCTAssertEqual(timeline.level(from: 1, to: 2), 0)
+        XCTAssertEqual(timeline.level(from: 8.5, to: 9.5), 0.2, accuracy: 0.001)
 
         timeline.discard(before: 2)
         XCTAssertFalse(timeline.samples(from: 0, to: 1).isEmpty, "Trims happen in 5 s steps")
@@ -1158,5 +1257,71 @@ final class DictationE2ETests: XCTestCase {
         }
 
         try await run()
+    }
+}
+
+// MARK: - Live Captions test microphones
+
+/// A microphone that hears exactly what the Mac plays, like speakers with no headphones.
+@available(macOS 14.2, *)
+@MainActor
+private final class EchoMicrophone: CaptionAudioSource {
+    private let tap: SystemAudioCapture
+
+    init(onSamples: @escaping @Sendable ([Float]) -> Void) {
+        self.tap = SystemAudioCapture(onSamples: onSamples)
+    }
+
+    func start() throws { try self.tap.start() }
+    func stop() { self.tap.stop() }
+}
+
+/// Audio queued for `FakeMicrophone` to "hear".
+private final class MicrophoneFeed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var queued: [Float] = []
+
+    func play(_ samples: [Float]) {
+        self.lock.withLock { self.queued += samples }
+    }
+
+    /// The next `count` samples: queued speech, then silence.
+    func next(_ count: Int) -> [Float] {
+        self.lock.withLock {
+            let taken = Array(self.queued.prefix(count))
+            self.queued.removeFirst(taken.count)
+            return taken + [Float](repeating: 0, count: count - taken.count)
+        }
+    }
+}
+
+/// A microphone that delivers `MicrophoneFeed` audio in real time, 100 ms at a time.
+@MainActor
+private final class FakeMicrophone: CaptionAudioSource {
+    private let feed: MicrophoneFeed
+    private let onSamples: @Sendable ([Float]) -> Void
+    private var task: Task<Void, Never>?
+
+    init(feed: MicrophoneFeed, onSamples: @escaping @Sendable ([Float]) -> Void) {
+        self.feed = feed
+        self.onSamples = onSamples
+    }
+
+    func start() throws {
+        let feed = self.feed
+        let onSamples = self.onSamples
+        self.task = Task.detached {
+            let chunk = 1600
+            var next = ContinuousClock.now
+            while !Task.isCancelled {
+                onSamples(feed.next(chunk))
+                next += .milliseconds(100)
+                try? await Task.sleep(until: next)
+            }
+        }
+    }
+
+    func stop() {
+        self.task?.cancel()
     }
 }

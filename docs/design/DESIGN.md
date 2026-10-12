@@ -154,7 +154,8 @@ House style for every user-facing string. Copy errors are release blockers.
   history badge “Enhanced”) · Voice Engine · speech model · Dictionary · keyboard
   shortcut (“shortcut” in short labels; never “hotkey”) · Settings (never
   “Preferences”) · File Transcription · Home · Live Captions (the feature, always
-  plural) · Mac Audio (the caption source).
+  plural) · Mac Audio and Microphone (the caption sources) · “You” (VoiceOver name for
+  the user's own caption lines).
 - **Capitalization.** Title Case for buttons, menu items, page/section titles, sidebar
   items. Sentence case for toggle/checkbox labels, descriptions, help and messages.
 - **Punctuation.** Ellipsis “…” (one character) for in-progress states and items that
@@ -228,6 +229,19 @@ replaced, so the line the viewer settles on is the accurate one.
   `AppFont.Overlay.label`: “Live Captions · Mac Audio” with glyphs, close button
   trailing. Captions in `AppFont.LiveCaption.text` (New York 19pt): three lines, bottom
   aligned; older lines scroll up and fade out under a top gradient.
+- **Microphone.** A “Microphone” chip in the header adds the user's own speech as a
+  second source; off by default and remembered, because an open microphone puts
+  AirPods in call mode and lowers playback quality. It uses dictation's input device.
+  Glyph + fill carry its state (`mic.slash` off, `mic` on with a raised fill,
+  `exclamationmark.triangle` in warning color when SayIt can't use the microphone; the
+  tooltip says how to allow it). While it is on, every line starts with its source
+  glyph (`speaker.wave.2` or `mic`, VoiceOver “Mac Audio” / “You”), and lines from both
+  sources interleave in the order they were spoken.
+- **No double captions.** Without headphones the microphone also hears the speakers. A
+  microphone line is shown only once it's clear it isn't that sound: right away if the
+  Mac was quiet while it was spoken, dropped if the Mac played the same words around
+  then, otherwise after at most 3 s. While the Mac is playing, the microphone's forming
+  words stay hidden for the same reason.
 - **Placement.** Centered above where the bottom recording overlay appears, so the two
   never overlap by default. Drag anywhere outside the controls to move it; the position
   is remembered.
@@ -241,12 +255,13 @@ replaced, so the line the viewer settles on is the accurate one.
   (`contentTransition(.opacity)` with `Motion.state`); ink changes animate with
   `Motion.state`. Reduce Motion turns all of it into the 0.16s fade.
 - **Dictation first.** While the user dictates, captions keep drafting but Qwen
-  refinement waits, so the dictation result is never queued behind a caption line.
+  refinement waits, so the dictation result is never queued behind a caption line, and
+  the microphone source hears silence: words said to SayIt aren't captions.
 - **Accessibility.** The caption area is one element labeled “Live Captions” with the
   updates-frequently trait; the close button is an `IconButton` (“Turn Off Live
   Captions”).
-- **Not yet.** Resizing, caption appearance settings, the microphone as a source and
-  speaker labels. Apple's Live Captions has the first three (see `REFERENCES.md`).
+- **Not yet.** Resizing, caption appearance settings and labels for different speakers
+  within Mac audio. Apple's Live Captions has the first two (see `REFERENCES.md`).
 
 Evidence: `LiveCaptionSnapshotTests` renders every state. Motion and the live pipeline
 need a screen recording; until then the motion verdict is “待验证”.

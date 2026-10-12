@@ -1,5 +1,13 @@
 import Foundation
 
+/// Where caption audio comes from.
+enum LiveCaptionSource: String, Sendable {
+    /// What the Mac plays.
+    case macAudio
+    /// The user, through the microphone.
+    case microphone
+}
+
 /// The caption text, grouped into lines that Qwen refines one at a time.
 ///
 /// Apple's streaming results arrive as short *final* phrases plus a *volatile* tail that
@@ -156,6 +164,20 @@ struct LiveCaptionTranscript: Equatable {
         self.lines.first { $0.id == id }
     }
 
+    /// Drops a line, e.g. microphone words that were the speakers' sound.
+    mutating func remove(_ id: Int) {
+        self.lines.removeAll { $0.id == id }
+    }
+
+    /// Text heard between two times: lines that overlap them plus the forming words.
+    func text(overlapping range: ClosedRange<Double>) -> String {
+        var parts = self.lines.filter { $0.start <= range.upperBound && $0.end >= range.lowerBound }.map(\.text)
+        if let volatileStart = self.volatileStart, volatileStart <= range.upperBound {
+            parts.append(self.volatileText)
+        }
+        return parts.joined(separator: " ")
+    }
+
     /// The audio to re-transcribe for a line: its words plus `padding` on each side, but
     /// never reaching into a neighbouring line, so a word at a boundary isn't heard twice.
     func audioRange(for id: Int, padding: Double) -> ClosedRange<Double>? {
@@ -201,5 +223,36 @@ struct LiveCaptionTranscript: Equatable {
 
     private static func isLatin(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy { $0.isASCII && !CharacterSet.whitespaces.contains($0) }
+    }
+}
+
+/// Recognizes microphone lines that are the speakers' sound picked up again: with no
+/// headphones, the microphone hears what the Mac plays, which is already captioned.
+enum LiveCaptionEcho {
+    /// Share of the microphone line's character pairs that must also occur in what the Mac
+    /// played. Pairs tolerate the small differences between two recognitions of the same
+    /// sound; a real reply rarely repeats half of what was just said.
+    static let threshold = 0.5
+
+    static func isEcho(_ microphoneText: String, of macAudioText: String) -> Bool {
+        let heard = self.normalized(microphoneText)
+        let played = self.normalized(macAudioText)
+        guard !heard.isEmpty, !played.isEmpty else { return false }
+        guard heard.count > 1 else { return played.contains(heard[0]) }
+
+        let playedPairs = Set(self.pairs(played))
+        let heardPairs = self.pairs(heard)
+        let shared = heardPairs.filter(playedPairs.contains).count
+        return Double(shared) / Double(heardPairs.count) >= self.threshold
+    }
+
+    /// Letters and digits only, lowercased: punctuation and spacing differ between
+    /// recognitions.
+    private static func normalized(_ text: String) -> [Character] {
+        text.lowercased().filter { $0.isLetter || $0.isNumber }.map { $0 }
+    }
+
+    private static func pairs(_ characters: [Character]) -> [String] {
+        zip(characters, characters.dropFirst()).map { String([$0, $1]) }
     }
 }
