@@ -8,6 +8,13 @@
 
 import SwiftUI
 
+enum PickerLayout {
+    static let defaultControlHeight: CGFloat = 28
+    static let popoverWidth: CGFloat = 300
+    static let popoverListMaxHeight: CGFloat = 260
+    static let maxVisibleOptions = 100
+}
+
 struct SearchableModelPicker: View {
     @Environment(\.theme) private var theme
     let models: [String]
@@ -43,185 +50,223 @@ struct SearchableModelPicker: View {
     @State private var isShowingPopover = false
 
     private var filteredModels: [String] {
-        if self.searchText.isEmpty {
-            return self.models
-        }
-        return self.models.filter { $0.localizedCaseInsensitiveContains(self.searchText) }
+        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return self.models }
+        return self.models.filter { $0.localizedCaseInsensitiveContains(query) }
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Model button that opens popover
+        HStack(spacing: Space.xs) {
             Button(action: { self.isShowingPopover.toggle() }) {
-                HStack(spacing: 8) {
-                    Text(self.selectedModel.isEmpty ? "Select Model" : self.selectedModel)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(self.selectedModel.isEmpty ? .secondary : .primary)
-                    Spacer(minLength: 6)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20, height: 20)
-                        .background(
-                            Circle()
-                                .fill(self.theme.palette.cardBackground.opacity(0.6))
-                                .overlay(
-                                    Circle()
-                                        .stroke(self.theme.palette.cardBorder.opacity(0.4), lineWidth: 1)
-                                )
-                        )
-                }
-                .frame(width: self.controlWidth, alignment: .leading)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .frame(height: self.controlHeight)
-                .contentShape(Rectangle())
-                .background(self.theme.materials.card, in: RoundedRectangle(cornerRadius: self.theme.metrics.corners.sm, style: .continuous))
-                .background(
-                    RoundedRectangle(cornerRadius: self.theme.metrics.corners.sm, style: .continuous)
-                        .fill(self.theme.palette.cardBackground)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: self.theme.metrics.corners.sm, style: .continuous)
-                                .stroke(self.theme.palette.cardBorder.opacity(0.35), lineWidth: 1)
-                        )
-                )
-                .shadow(
-                    color: self.theme.palette.cardBorder.opacity(0.18),
-                    radius: 3,
-                    x: 0,
-                    y: 1
+                PickerFieldLabel(
+                    text: self.selectedModel,
+                    placeholder: "Choose a Model",
+                    isMonospaced: true,
+                    width: self.controlWidth,
+                    height: self.controlHeight ?? PickerLayout.defaultControlHeight
                 )
             }
             .buttonStyle(.plain)
             .disabled(!self.selectionEnabled)
-            .opacity(self.selectionEnabled ? 1 : 0.55)
+            .opacity(self.selectionEnabled ? 1 : 0.45)
+            .help(self.selectedModel.isEmpty ? "Choose a model" : self.selectedModel)
+            .accessibilityLabel("Model")
+            .accessibilityValue(self.selectedModel.isEmpty ? "None selected" : self.selectedModel)
+            .accessibilityHint("Shows the available models")
             .popover(isPresented: self.$isShowingPopover, arrowEdge: .bottom) {
-                VStack(spacing: 0) {
-                    // Search field
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField("Search models...", text: self.$searchText)
-                            .textFieldStyle(.plain)
-                    }
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(self.theme.palette.contentBackground)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
-                            )
-                    )
-
-                    Divider()
-
-                    VStack(spacing: 0) {
-                        if self.models.isEmpty {
-                            VStack(spacing: 8) {
-                                Image(systemName: "tray")
-                                    .font(.title2)
-                                    .foregroundStyle(.secondary)
-                                Text("No models")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text("Click refresh to fetch from API")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .frame(height: 100)
-                            .frame(maxWidth: .infinity)
-                        } else {
-                            ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 0) {
-                                    if self.filteredModels.isEmpty {
-                                        Text("No models match '\(self.searchText)'")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .padding()
-                                            .frame(maxWidth: .infinity, alignment: .center)
-                                    } else {
-                                        ForEach(self.filteredModels.prefix(100), id: \.self) { model in
-                                            Button(action: {
-                                                self.selectedModel = model
-                                                self.searchText = ""
-                                                self.isShowingPopover = false
-                                            }) {
-                                                HStack {
-                                                    Text(model)
-                                                        .lineLimit(1)
-                                                    Spacer()
-                                                    if model == self.selectedModel {
-                                                        Image(systemName: "checkmark")
-                                                            .foregroundStyle(self.theme.palette.accent)
-                                                    }
-                                                }
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .contentShape(Rectangle())
-                                            }
-                                            .buttonStyle(.plain)
-                                            .background(model == self.selectedModel ? self.theme.palette.accent.opacity(0.15) : Color.clear)
-                                        }
-                                    }
-                                }
-                            }
-                            .frame(maxHeight: 250)
-
-                            if self.filteredModels.count > 100 {
-                                Divider()
-                                Text("\(self.filteredModels.count - 100) more (use search)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .padding(6)
-                            }
-                        }
-                    }
-                    .id(self.searchText.isEmpty)
-                }
-                .frame(width: 280)
+                self.popoverContent
             }
 
-            // Refresh button
-            if let onRefresh = onRefresh {
-                if self.controlHeight == nil {
-                    Button(action: {
-                        Task { await onRefresh() }
-                    }) {
-                        if self.isRefreshing {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(self.isRefreshing || !self.refreshEnabled)
-                    .opacity(self.refreshEnabled ? 1 : 0.45)
-                    .help("Refresh model list")
+            if let onRefresh {
+                if self.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: PickerLayout.defaultControlHeight, height: PickerLayout.defaultControlHeight)
+                        .accessibilityLabel("Refreshing models")
                 } else {
-                    Button(action: {
+                    IconButton("Refresh Models", systemName: "arrow.clockwise", size: PickerLayout.defaultControlHeight) {
                         Task { await onRefresh() }
-                    }) {
-                        if self.isRefreshing {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
                     }
-                    .buttonStyle(AccentButtonStyle(compact: true))
-                    .frame(width: self.controlHeight, height: self.controlHeight)
-                    .disabled(self.isRefreshing || !self.refreshEnabled)
-                    .opacity(self.refreshEnabled ? 1 : 0.45)
-                    .help("Refresh model list")
+                    .disabled(!self.refreshEnabled)
                 }
             }
         }
+    }
+
+    private var popoverContent: some View {
+        VStack(spacing: 0) {
+            PickerSearchField(placeholder: "Search models", text: self.$searchText) {
+                if let first = self.filteredModels.first { self.select(first) }
+            }
+
+            Divider()
+
+            if self.models.isEmpty {
+                PickerEmptyState(
+                    symbol: "tray",
+                    title: "No Models Yet",
+                    message: self.onRefresh == nil
+                        ? "This provider hasn't listed any models."
+                        : "Refresh the list to load models from the provider."
+                )
+            } else if self.filteredModels.isEmpty {
+                PickerEmptyState(
+                    symbol: "magnifyingglass",
+                    title: "No Matches",
+                    message: "No models match “\(self.searchText)”."
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(self.filteredModels.prefix(PickerLayout.maxVisibleOptions), id: \.self) { model in
+                            PickerOptionRow(title: model, isSelected: model == self.selectedModel, isMonospaced: true) {
+                                self.select(model)
+                            }
+                        }
+                    }
+                    .padding(Space.xs)
+                }
+                .frame(maxHeight: PickerLayout.popoverListMaxHeight)
+
+                let hidden = self.filteredModels.count - PickerLayout.maxVisibleOptions
+                if hidden > 0 {
+                    Divider()
+                    Text("\(CopyFormat.count(hidden, "more model")) — refine your search to see them.")
+                        .font(AppFont.caption)
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                        .padding(Space.sm)
+                }
+            }
+        }
+        .frame(width: PickerLayout.popoverWidth)
+    }
+
+    private func select(_ model: String) {
+        self.selectedModel = model
+        self.searchText = ""
+        self.isShowingPopover = false
+    }
+}
+
+// MARK: - Shared Picker Parts
+
+/// The closed state of a searchable picker: reads like a native pop-up button.
+struct PickerFieldLabel: View {
+    @Environment(\.theme) private var theme
+    @State private var isHovered = false
+    let text: String
+    let placeholder: String
+    var isMonospaced = false
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+        HStack(spacing: Space.sm) {
+            Text(self.text.isEmpty ? self.placeholder : self.text)
+                .font(self.isMonospaced && !self.text.isEmpty ? AppFont.mono : AppFont.callout)
+                .foregroundStyle(self.text.isEmpty ? self.theme.palette.secondaryText : self.theme.palette.primaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: Space.xs)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(AppFont.iconSmall)
+                .foregroundStyle(self.theme.palette.tertiaryText)
+        }
+        .padding(.horizontal, Space.sm + Space.xxs)
+        .frame(width: self.width, height: self.height, alignment: .leading)
+        .background(shape.fill(self.isHovered ? self.theme.palette.surfaceHover : self.theme.palette.surfaceSunken))
+        .overlay(shape.strokeBorder(self.theme.palette.hairline, lineWidth: 1))
+        .contentShape(shape)
+        .onHover { self.isHovered = $0 }
+        .motion(Motion.snappy, value: self.isHovered)
+    }
+}
+
+struct PickerSearchField: View {
+    @Environment(\.theme) private var theme
+    let placeholder: String
+    @Binding var text: String
+    var onSubmit: () -> Void
+
+    var body: some View {
+        HStack(spacing: Space.sm) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(self.theme.palette.tertiaryText)
+                .accessibilityHidden(true)
+            TextField(self.placeholder, text: self.$text, prompt: Text(self.placeholder))
+                .textFieldStyle(.plain)
+                .font(AppFont.body)
+                .labelsHidden()
+                .onSubmit(self.onSubmit)
+        }
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm + Space.xxs)
+    }
+}
+
+struct PickerOptionRow: View {
+    @Environment(\.theme) private var theme
+    @State private var isHovered = false
+    let title: String
+    let isSelected: Bool
+    var isMonospaced = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: self.action) {
+            HStack(spacing: Space.sm) {
+                Text(self.title)
+                    .font(self.isMonospaced ? AppFont.mono : AppFont.body)
+                    .foregroundStyle(self.theme.palette.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: Space.sm)
+                if self.isSelected {
+                    Image(systemName: "checkmark")
+                        .font(AppFont.iconSmall)
+                        .foregroundStyle(self.theme.palette.accentForeground)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, Space.sm + Space.xxs)
+            .padding(.vertical, Space.xs + Space.xxs)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                    .fill(self.isHovered ? self.theme.palette.surfaceHover : (self.isSelected ? self.theme.palette.accentSubtle : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { self.isHovered = $0 }
+        .accessibilityAddTraits(self.isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+struct PickerEmptyState: View {
+    @Environment(\.theme) private var theme
+    let symbol: String
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: Space.sm) {
+            Image(systemName: self.symbol)
+                .font(AppFont.iconLarge)
+                .foregroundStyle(self.theme.palette.tertiaryText)
+                .accessibilityHidden(true)
+            Text(self.title)
+                .font(AppFont.rowTitle)
+                .foregroundStyle(self.theme.palette.primaryText)
+            Text(self.message)
+                .font(AppFont.caption)
+                .foregroundStyle(self.theme.palette.secondaryText)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Space.xl)
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -233,4 +278,5 @@ struct SearchableModelPicker: View {
         isRefreshing: false
     )
     .padding()
+    .sayItTheme()
 }

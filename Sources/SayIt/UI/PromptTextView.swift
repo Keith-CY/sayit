@@ -8,7 +8,9 @@ struct PromptTextView: NSViewRepresentable {
 
     var isEditable: Bool = true
     var font: NSFont = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-    var contentInset: CGFloat = 10
+    /// Spoken by VoiceOver; the editor has no visible label of its own.
+    var accessibilityLabel: String?
+    var contentInset: CGFloat = Space.md
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: self.$text)
@@ -28,9 +30,14 @@ struct PromptTextView: NSViewRepresentable {
         textView.isSelectable = true
         textView.drawsBackground = false
         textView.font = self.font
+        textView.textColor = .labelColor
+        textView.insertionPointColor = .controlAccentColor
         textView.delegate = context.coordinator
         textView.textContainerInset = NSSize(width: self.contentInset, height: self.contentInset)
         textView.textContainer?.lineFragmentPadding = 0
+        if let accessibilityLabel {
+            textView.setAccessibilityLabel(accessibilityLabel)
+        }
 
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -64,6 +71,9 @@ struct PromptTextView: NSViewRepresentable {
         }
         if textView.textContainer?.lineFragmentPadding != 0 {
             textView.textContainer?.lineFragmentPadding = 0
+        }
+        if let accessibilityLabel, textView.accessibilityLabel() != accessibilityLabel {
+            textView.setAccessibilityLabel(accessibilityLabel)
         }
     }
 
