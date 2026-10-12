@@ -1,248 +1,58 @@
 import SwiftUI
 
+/// "Edit Mode": write new text, or edit text selected in another app.
 struct RewriteModeView: View {
     @ObservedObject var service: RewriteModeService
     @EnvironmentObject var appServices: AppServices
     private var asr: ASRService { self.appServices.asr }
     @ObservedObject var settings = SettingsStore.shared
-    @EnvironmentObject var menuBarManager: MenuBarManager
     @Environment(\.theme) private var theme
     var onClose: (() -> Void)?
 
     @State private var inputText: String = ""
-    @State private var showOriginal: Bool = true
-    @State private var showHowTo: Bool = false
-    @State private var isHoveringHowTo: Bool = false
-    @State private var isThinkingExpanded: Bool = false
 
     // Local state for available models (derived from shared AI Settings pool)
     @State private var availableModels: [String] = []
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header - cleaner, just title and close
-            HStack {
-                Image(systemName: "pencil.and.outline")
-                    .font(.title2)
-                    .foregroundStyle(self.theme.palette.accent)
-                Text("Edit Mode")
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                Spacer()
-
-                Button(action: { self.onClose?() }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding()
-            .background(self.theme.palette.windowBackground)
-
-            HStack(spacing: 6) {
-                Image(systemName: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(self.theme.palette.secondaryText)
-                Text("Edit Mode is powered by Custom Prompts.")
-                    .font(.caption)
-                    .foregroundStyle(self.theme.palette.secondaryText)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
-            .background(self.theme.palette.windowBackground)
-
-            // How To (collapsible)
-            self.howToSection
+            self.header
 
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Original Text Section
-                    if !self.service.originalText.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Original Text")
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if !self.service.rewrittenText.isEmpty {
-                                    Button(self.showOriginal ? "Hide" : "Show") {
-                                        withAnimation { self.showOriginal.toggle() }
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.link)
-                                }
-                            }
-
-                            if self.showOriginal {
-                                Text(self.service.originalText)
-                                    .padding()
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(self.theme.palette.cardBackground)
-                                    .cornerRadius(8)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                    } else {
-                        VStack(spacing: 12) {
-                            Image(systemName: "text.bubble")
-                                .font(.system(size: 48))
-                                .foregroundStyle(self.theme.palette.accent)
-                            Text("Edit Mode")
-                                .font(.title2)
-                                .fontWeight(.bold)
-                            Text("Ask the AI to write anything for you - emails, replies, summaries, answers, and more.")
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-
-                            Text("Or select text first to rewrite existing content.")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .multilineTextAlignment(.center)
-                                .padding(.top, 4)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 40)
-                    }
-
-                    // Rewritten Text Section
-                    if !self.service.rewrittenText.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Rewritten Text")
-                                .font(.caption)
-                                .fontWeight(.bold)
-                                .foregroundStyle(self.theme.palette.accent)
-
-                            Text(self.service.rewrittenText)
-                                .padding()
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(self.theme.palette.accent.opacity(0.1))
-                                .cornerRadius(8)
-                                .textSelection(.enabled)
-
-                            HStack {
-                                Button("Try Again") {
-                                    self.service.rewrittenText = ""
-                                }
-                                .buttonStyle(.bordered)
-
-                                Spacer()
-
-                                Button("Replace Original") {
-                                    self.service.acceptRewrite()
-                                    self.onClose?()
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(self.theme.palette.accent)
-                            }
-                            .padding(.top, 8)
-                        }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-
-                    // Conversation History (optional, maybe just last error)
-                    if let lastMsg = service.conversationHistory.last, lastMsg.role == .assistant,
-                       service.rewrittenText.isEmpty
-                    {
-                        Text(lastMsg.content) // Error message usually
-                            .foregroundStyle(.red)
-                            .padding()
-                            .background(Color.red.opacity(0.1))
-                            .cornerRadius(8)
-                    }
-                }
-                .padding()
+                EditModeContent(
+                    originalText: self.service.originalText,
+                    resultText: self.service.rewrittenText,
+                    errorText: self.errorText,
+                    isProcessing: self.service.isProcessing,
+                    shortcut: self.settings.rewriteModeShortcutEnabled ? self.settings.rewriteModeHotkeyShortcut.displayString : nil,
+                    onTryAgain: { withMotion(Motion.exit) { self.service.rewrittenText = "" } },
+                    onAccept: {
+                        self.service.acceptRewrite()
+                        self.onClose?()
+                    },
+                    onExample: { self.inputText = $0 }
+                )
+                .frame(maxWidth: ActivityUI.contentMaxWidth, alignment: .leading)
+                .padding(.horizontal, Space.xxl)
+                .padding(.vertical, Space.xl)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(self.theme.palette.cardBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1)
-                    )
-            )
+
+            if self.service.isProcessing, self.settings.showThinkingTokens, !self.service.streamingThinkingText.isEmpty {
+                ReasoningDisclosure(text: self.service.streamingThinkingText, isLive: true)
+                    .padding(.horizontal, Space.xxl)
+                    .padding(.bottom, Space.sm)
+                    .motionTransition()
+            }
 
             Divider()
 
-            // Input Area with model selectors inline
-            HStack(spacing: 8) {
-                // Provider Selector (compact, searchable)
-                SearchableProviderPicker(
-                    builtInProviders: self.builtInProvidersList,
-                    savedProviders: self.settings.savedProviders,
-                    selectedProviderID: Binding(
-                        get: { self.settings.rewriteModeSelectedProviderID },
-                        set: { newValue in
-                            // Prevent selecting disabled Apple Intelligence
-                            if newValue == "apple-intelligence-disabled" {
-                                self.settings.rewriteModeSelectedProviderID = "openai"
-                            } else {
-                                self.settings.rewriteModeSelectedProviderID = newValue
-                            }
-                            self.updateAvailableModels()
-                        }
-                    )
-                )
-
-                // Model Selector (hidden for Apple Intelligence)
-                if self.settings.rewriteModeSelectedProviderID != "apple-intelligence" {
-                    SearchableModelPicker(
-                        models: self.availableModels,
-                        selectedModel: Binding(
-                            get: { self.settings.rewriteModeSelectedModel ?? self.availableModels.first ?? "" },
-                            set: { self.settings.rewriteModeSelectedModel = $0 }
-                        ),
-                        onRefresh: nil,
-                        isRefreshing: false
-                    )
-                }
-
-                // Input field (flexible)
-                TextField(
-                    self.service.originalText.isEmpty
-                        ? "Ask me to write or edit..."
-                        : "How should I edit this?",
-                    text: self.$inputText
-                )
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(self.submitRequest)
-
-                Button(action: self.submitRequest) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                }
-                .buttonStyle(.plain)
-                .disabled(self.inputText.isEmpty || self.service.isProcessing)
-
-                // Voice Input
-                Button(action: self.toggleRecording) {
-                    Image(systemName: self.asr.isRunning ? "stop.circle.fill" : "mic.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(self.asr.isRunning ? Color.red : self.theme.palette.accent)
-                }
-                .buttonStyle(.plain)
-
-                if self.service.isProcessing {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-            .padding()
-            .background(self.theme.palette.windowBackground)
-
-            // Thinking view (real-time, during processing)
-            if self.service.isProcessing && self.settings.showThinkingTokens && !self.service.streamingThinkingText.isEmpty {
-                self.thinkingView
-                    .padding(.horizontal)
-                    .padding(.bottom, 8)
-            }
+            self.inputBar
         }
+        .background(self.theme.palette.contentBackground)
+        .motion(Motion.state, value: self.service.rewrittenText.isEmpty)
         .onChange(of: self.asr.finalText) { _, newText in
             if !newText.isEmpty {
                 self.inputText = newText
@@ -255,8 +65,97 @@ struct RewriteModeView: View {
             // Note: Overlay mode is now set centrally by ContentView.handleModeTransition()
             self.updateAvailableModels()
         }
-        // Note: onDisappear overlay mode handling removed - now handled centrally by ContentView
     }
+
+    /// The last assistant message is an error when no result was produced.
+    private var errorText: String? {
+        guard self.service.rewrittenText.isEmpty,
+              !self.service.isProcessing,
+              let last = self.service.conversationHistory.last,
+              last.role == .assistant
+        else { return nil }
+        return last.content
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: Space.md) {
+            ActivityUI.Header(
+                "Edit Mode",
+                subtitle: "Write something new, or select text in any app and say how to change it."
+            )
+            if let onClose = self.onClose {
+                IconButton("Close", systemName: "xmark", action: onClose)
+            }
+        }
+        .padding(.horizontal, Space.xxl)
+        .padding(.vertical, Space.lg)
+    }
+
+    // MARK: - Input
+
+    private var inputBar: some View {
+        HStack(spacing: Space.sm) {
+            SearchableProviderPicker(
+                builtInProviders: self.builtInProvidersList,
+                savedProviders: self.settings.savedProviders,
+                selectedProviderID: Binding(
+                    get: { self.settings.rewriteModeSelectedProviderID },
+                    set: { newValue in
+                        // Prevent selecting disabled Apple Intelligence
+                        if newValue == "apple-intelligence-disabled" {
+                            self.settings.rewriteModeSelectedProviderID = "openai"
+                        } else {
+                            self.settings.rewriteModeSelectedProviderID = newValue
+                        }
+                        self.updateAvailableModels()
+                    }
+                )
+            )
+
+            if self.settings.rewriteModeSelectedProviderID != "apple-intelligence" {
+                SearchableModelPicker(
+                    models: self.availableModels,
+                    selectedModel: Binding(
+                        get: { self.settings.rewriteModeSelectedModel ?? self.availableModels.first ?? "" },
+                        set: { self.settings.rewriteModeSelectedModel = $0 }
+                    ),
+                    onRefresh: nil,
+                    isRefreshing: false
+                )
+            }
+
+            TextField(
+                self.service.originalText.isEmpty ? "Describe what to write…" : "Describe how to change it…",
+                text: self.$inputText
+            )
+            .textFieldStyle(.roundedBorder)
+            .font(AppFont.body)
+            .onSubmit(self.submitRequest)
+
+            if self.service.isProcessing {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Working")
+            } else {
+                IconButton("Send", systemName: "arrow.up.circle.fill", role: .primary, action: self.submitRequest)
+                    .disabled(self.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            IconButton(
+                self.asr.isRunning ? "Stop Voice Input" : "Start Voice Input",
+                systemName: self.asr.isRunning ? "stop.circle.fill" : "mic",
+                role: self.asr.isRunning ? .destructive : .secondary,
+                action: self.toggleRecording
+            )
+        }
+        .padding(.horizontal, Space.xxl)
+        .padding(.vertical, Space.md)
+        .background(self.theme.palette.windowBackground)
+    }
+
+    // MARK: - Actions
 
     private func toggleRecording() {
         if self.asr.isRunning {
@@ -267,8 +166,8 @@ struct RewriteModeView: View {
     }
 
     private func submitRequest() {
-        guard !self.inputText.isEmpty else { return }
-        let prompt = self.inputText
+        let prompt = self.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, !self.service.isProcessing else { return }
         self.inputText = ""
         Task {
             await self.service.processRewriteRequest(prompt)
@@ -287,8 +186,7 @@ struct RewriteModeView: View {
             return
         }
 
-        // Pull models from the shared pool configured in AI Settings
-        let possibleKeys = self.providerKeys(for: currentProviderID)
+        let possibleKeys = ModelRepository.shared.providerKeys(for: currentProviderID)
         let storedList = possibleKeys.lazy
             .compactMap { SettingsStore.shared.availableModelsByProvider[$0] }
             .first { !$0.isEmpty }
@@ -305,163 +203,161 @@ struct RewriteModeView: View {
         }
     }
 
-    private func providerKeys(for providerID: String) -> [String] {
-        return ModelRepository.shared.providerKeys(for: providerID)
-    }
-
     private var builtInProvidersList: [(id: String, name: String)] {
         ModelRepository.shared.builtInProvidersList(
             includeAppleIntelligence: true,
             appleIntelligenceAvailable: AppleIntelligenceService.isAvailable
         )
     }
+}
 
-    private var shortcutDisplay: String {
-        self.settings.rewriteModeHotkeyShortcut.displayString
+// MARK: - Content
+
+/// Selected text, the result and the empty state. Pure presentation.
+struct EditModeContent: View {
+    @Environment(\.theme) private var theme
+
+    let originalText: String
+    let resultText: String
+    let errorText: String?
+    let isProcessing: Bool
+    let shortcut: String?
+    let onTryAgain: () -> Void
+    let onAccept: () -> Void
+    var onExample: (String) -> Void = { _ in }
+
+    @State private var showOriginal = true
+
+    private var isEditingSelection: Bool {
+        !self.originalText.isEmpty
     }
 
-    private var howToSection: some View {
-        VStack(spacing: 0) {
-            // Toggle button with hover effect
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { self.showHowTo.toggle() } }) {
+    static let writeExamples = ["Write an email asking for Friday off", "Draft a thank-you note to the team"]
+    static let editExamples = ["Make this more formal", "Fix the grammar and spelling", "Summarize this in two sentences"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.xl) {
+            if self.isEditingSelection {
+                self.selectedTextSection
+            } else if self.resultText.isEmpty, self.errorText == nil {
+                self.emptyState
+            }
+
+            if self.isProcessing, self.resultText.isEmpty {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.small)
+                    Text(self.isEditingSelection ? "Editing…" : "Writing…")
+                        .font(AppFont.callout)
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                        .ambientPulse(isActive: true)
+                }
+                .accessibilityElement(children: .combine)
+                .motionTransition()
+            }
+
+            if !self.resultText.isEmpty {
+                self.resultSection
+                    .motionTransition()
+            }
+
+            if let errorText = self.errorText {
+                ActivityUI.Banner(.error, title: "Couldn’t complete the request", message: errorText)
+                    .motionTransition()
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            ActivityUI.EmptyState(
+                systemImage: "pencil.line",
+                title: "Write or Edit by Voice",
+                message: "Ask SayIt to write anything — emails, replies, summaries, answers. Or select text in any app first to edit it."
+            )
+
+            HStack(alignment: .top, spacing: Space.xl) {
+                self.examples(title: "Write Something New", examples: Self.writeExamples)
+                self.examples(title: "Edit Selected Text", examples: Self.editExamples)
+            }
+
+            if let shortcut = self.shortcut {
+                HStack(spacing: Space.xs) {
+                    Text("From any app, press")
+                    ActivityUI.KeyCap(shortcut)
+                    Text("and say what you want.")
+                }
+                .font(AppFont.caption)
+                .foregroundStyle(self.theme.palette.secondaryText)
+            }
+        }
+    }
+
+    private func examples(title: String, examples: [String]) -> some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text(title)
+                .font(AppFont.captionEmphasis)
+                .foregroundStyle(self.theme.palette.secondaryText)
+            ForEach(examples, id: \.self) { example in
+                Button {
+                    self.onExample(example)
+                } label: {
+                    Text("“\(example)”")
+                        .font(AppFont.transcript)
+                }
+                .buttonStyle(.sayIt(.quiet, size: .small))
+                .accessibilityHint("Puts this request in the message field")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var selectedTextSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack {
+                Text("Selected Text")
+                    .font(AppFont.captionEmphasis)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+                Spacer()
+                if !self.resultText.isEmpty {
+                    Button(self.showOriginal ? "Hide" : "Show") {
+                        withMotion(Motion.state) { self.showOriginal.toggle() }
+                    }
+                    .buttonStyle(.sayIt(.quiet, size: .small))
+                    .accessibilityLabel(self.showOriginal ? "Hide Selected Text" : "Show Selected Text")
+                }
+            }
+            if self.showOriginal || self.resultText.isEmpty {
+                ActivityUI.TranscriptBlock(text: self.originalText, emphasis: false)
+                    .motionTransition(edge: .top)
+            }
+        }
+    }
+
+    private var resultSection: some View {
+        ThemedCard(style: .prominent) {
+            VStack(alignment: .leading, spacing: Space.md) {
                 HStack {
-                    Image(systemName: "questionmark.circle")
-                        .font(.caption)
-                    Text("How to use")
-                        .font(.caption)
+                    Text(self.isEditingSelection ? "Edited Text" : "Draft")
+                        .font(AppFont.captionEmphasis)
+                        .foregroundStyle(self.theme.palette.secondaryText)
                     Spacer()
-                    Image(systemName: self.showHowTo ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
+                    ActivityUI.CopyButton(text: self.resultText)
                 }
-                .foregroundStyle(self.isHoveringHowTo ? .primary : .secondary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(self.isHoveringHowTo ? Color.primary.opacity(0.05) : Color.clear)
-                .cornerRadius(4)
-            }
-            .buttonStyle(.plain)
-            .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.15)) { self.isHoveringHowTo = hovering }
-            }
-
-            if self.showHowTo {
-                VStack(alignment: .leading, spacing: 12) {
-                    // Create new text
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Create New Text")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 4) {
-                            Text("Press")
-                                .font(.caption)
-                            Text(self.shortcutDisplay)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(self.theme.palette.cardBackground.opacity(0.8))
-                                .cornerRadius(4)
-                            Text("and speak what you want to write.")
-                                .font(.caption)
-                        }
-                        .foregroundStyle(.primary.opacity(0.8))
-
-                        self.howToItem("\"Write an email asking for time off\"")
-                        self.howToItem("\"Draft a thank you note\"")
-                    }
-
-                    // Edit selected text
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Edit Selected Text")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 4) {
-                            Text("Select text first, then press")
-                                .font(.caption)
-                            Text(self.shortcutDisplay)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.primary.opacity(0.1))
-                                .cornerRadius(4)
-                            Text("and speak your instruction.")
-                                .font(.caption)
-                        }
-                        .foregroundStyle(.primary.opacity(0.8))
-
-                        self.howToItem("\"Make this more formal\"")
-                        self.howToItem("\"Fix grammar and spelling\"")
-                        self.howToItem("\"Summarize this\"")
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .background(self.theme.palette.contentBackground)
-    }
-
-    private func howToItem(_ text: String) -> some View {
-        HStack(spacing: 6) {
-            Text("•")
-                .foregroundStyle(.secondary)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.primary.opacity(0.8))
-        }
-    }
-
-    // MARK: - Thinking View (Cursor-style shimmer)
-
-    private var thinkingView: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header with shimmer effect - tap to expand/collapse
-            Button(action: { withAnimation(.easeInOut(duration: 0.2)) { self.isThinkingExpanded.toggle() } }) {
-                HStack(spacing: 8) {
-                    ThinkingShimmerLabel()
-
+                Text(self.resultText)
+                    .font(AppFont.transcriptLarge)
+                    .lineSpacing(Space.xs)
+                    .foregroundStyle(self.theme.palette.primaryText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: Space.sm) {
+                    Button("Try Again", action: self.onTryAgain)
+                        .buttonStyle(.sayItSecondary)
                     Spacer()
-
-                    Image(systemName: self.isThinkingExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary.opacity(0.6))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-
-            // Expanded content
-            if self.isThinkingExpanded {
-                ScrollView(.vertical, showsIndicators: true) {
-                    Text(self.service.streamingThinkingText)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 10)
-                }
-                .frame(maxHeight: 150)
-            } else {
-                // Preview - first 100 chars
-                if !self.service.streamingThinkingText.isEmpty {
-                    Text(String(self.service.streamingThinkingText.prefix(100)) + (self.service.streamingThinkingText.count > 100 ? "..." : ""))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary.opacity(0.7))
-                        .lineLimit(2)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 8)
+                    Button(self.isEditingSelection ? "Replace Selection" : "Insert Text", action: self.onAccept)
+                        .buttonStyle(.sayItPrimary)
+                        .keyboardShortcut(.return, modifiers: .command)
                 }
             }
         }
-        .background(self.theme.palette.cardBackground.opacity(0.9))
-        .cornerRadius(8)
     }
 }
