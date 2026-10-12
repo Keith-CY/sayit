@@ -493,13 +493,13 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         if let detail = SecCopyErrorMessageString(status, nil) as String? {
             message += "\n\nmacOS reported: \(detail) (\(status))"
         }
-        message += "\n\nClick \"Always Allow\" when the Keychain prompt appears, or open Keychain Access > login > Passwords, locate the \(AppIdentity.displayName) entry, and grant access."
+        message += "\n\nChoose “Always Allow” when the Keychain prompt appears, or open Keychain Access › login › Passwords, find the \(AppIdentity.displayName) entry, and grant access."
         return message
     }
 
     func presentKeychainAccessAlert(message: String) {
         let msg = message.isEmpty
-            ? "\(AppIdentity.displayName) stores provider API keys securely in your macOS Keychain. Please grant access by choosing \"Always Allow\" when prompted."
+            ? "\(AppIdentity.displayName) stores provider API keys in your macOS Keychain. Choose “Always Allow” when prompted to grant access."
             : message
 
         let alert = NSAlert()
@@ -537,7 +537,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         if baseURL.isEmpty {
             await MainActor.run {
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = "Base URL is required for \(providerName)"
+                self.connectionErrorMessage = "Enter a base URL for \(providerName)."
             }
             return
         }
@@ -545,7 +545,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         if !isLocal && apiKey.isEmpty {
             await MainActor.run {
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = "API key is required for \(providerName). Enter your API key above."
+                self.connectionErrorMessage = "Enter an API key for \(providerName)."
             }
             return
         }
@@ -554,7 +554,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         guard !trimmedModel.isEmpty else {
             await MainActor.run {
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = "Select a model before verifying. You may need to add a model manually for \(providerName)."
+                self.connectionErrorMessage = "Choose a model for \(providerName) before verifying."
             }
             return
         }
@@ -593,7 +593,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         guard let url = URL(string: fullURL) else {
             await MainActor.run {
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = "Invalid Base URL format: '\(endpoint)' could not be parsed as a URL"
+                self.connectionErrorMessage = "“\(endpoint)” isn't a valid URL. Check the base URL."
             }
             return
         }
@@ -653,7 +653,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         guard let jsonData = try? JSONSerialization.data(withJSONObject: requestDict, options: []) else {
             await MainActor.run {
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = "Internal error: Failed to create test request payload"
+                self.connectionErrorMessage = "SayIt couldn't prepare the verification request. Try again."
             }
             return
         }
@@ -694,7 +694,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             } else {
                 await MainActor.run {
                     self.updateConnectionStatus(.failed, for: providerID)
-                    self.connectionErrorMessage = "Unexpected response type from server"
+                    self.connectionErrorMessage = "The server sent an unexpected response."
                 }
             }
         } catch {
@@ -723,21 +723,21 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         case 400:
             // Check for specific error patterns in response
             if responseBody.contains("model") {
-                return "Invalid model '\(model)' for \(providerName). Check if the model name is correct."
+                return "\(providerName) doesn't accept the model “\(model)”. Check the model name."
             }
             if responseBody.contains("messages") || responseBody.contains("content") {
-                return "Request format error for \(providerName). The API may have changed or the base URL is pointed at a different API."
+                return "\(providerName) rejected the request format. The base URL may point to a different API."
             }
-            return "Bad request (HTTP 400). Check that the base URL '\(endpoint)' is correct for \(providerName)."
+            return "Bad request (HTTP 400). Check that “\(endpoint)” is the right base URL for \(providerName)."
 
         case 401:
             if responseBody.contains("invalid") || responseBody.contains("expired") {
-                return "Invalid API key for \(providerName). Please verify your API key is correct and not expired."
+                return "\(providerName) didn't accept the API key. Check that it's correct and hasn't expired."
             }
             if responseBody.contains("missing") {
-                return "API key is missing. Enter your \(providerName) API key above."
+                return "Enter your \(providerName) API key."
             }
-            return "Authentication failed (HTTP 401). Your \(providerName) API key may be invalid. Double-check the key."
+            return "Authentication failed (HTTP 401). Check your \(providerName) API key."
 
         case 403:
             if responseBody.contains("permission") || responseBody.contains("access") {
@@ -746,17 +746,17 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             if responseBody.contains("region") || responseBody.contains("country") {
                 return "Access denied. \(providerName) may not be available in your region."
             }
-            return "Forbidden (HTTP 403). Check your \(providerName) account permissions and subscription."
+            return "Access denied (HTTP 403). Check your \(providerName) account permissions and plan."
 
         case 404:
             if responseBody.contains("model") {
-                return "Model '\(model)' not found on \(providerName). Check if the model name is spelled correctly."
+                return "\(providerName) has no model named “\(model)”. Check the spelling."
             }
-            return "Endpoint not found (HTTP 404). The base URL '\(endpoint)' may be incorrect for \(providerName)."
+            return "Not found (HTTP 404). “\(endpoint)” may be the wrong base URL for \(providerName)."
 
         case 422:
             if responseBody.contains("model") {
-                return "Model '\(model)' is not valid for \(providerName). Try a different model."
+                return "“\(model)” isn't valid for \(providerName). Try a different model."
             }
             return "Invalid request parameters for \(providerName). The model or configuration may be incorrect."
 
@@ -784,17 +784,17 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
             return "Connection to \(providerName) timed out. Check if the base URL is correct and the service is available."
         case NSURLErrorCannotConnectToHost:
             if providerID == "llamacpp" || providerID == "ollama" || providerID == "lmstudio" {
-                return "Cannot connect. Is the \(providerName) server running? Check that the local server is started."
+                return "Can't connect. Make sure the \(providerName) server is running."
             }
-            return "Cannot connect to \(providerName). Check your internet connection and base URL."
+            return "Can't connect to \(providerName). Check your internet connection and the base URL."
         case NSURLErrorNetworkConnectionLost:
             return "Network connection lost while connecting to \(providerName). Check your internet connection."
         case NSURLErrorNotConnectedToInternet:
             return "No internet connection. Connect to the internet to verify \(providerName)."
         case NSURLErrorSecureConnectionFailed:
-            return "SSL/TLS error connecting to \(providerName). The server's certificate may be invalid."
+            return "Secure connection to \(providerName) failed. The server's certificate may be invalid."
         case NSURLErrorCannotFindHost:
-            return "Cannot find host. Check if the base URL for \(providerName) is spelled correctly."
+            return "Can't find the server. Check the spelling of the \(providerName) base URL."
         default:
             return "Network error: \(error.localizedDescription)"
         }
@@ -953,7 +953,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
             await MainActor.run {
                 guard !models.isEmpty else {
-                    self.fetchModelsError = "No models returned from API"
+                    self.fetchModelsError = "The provider didn't return any models. Check the base URL and API key."
                     return
                 }
 
@@ -1170,7 +1170,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
     func promptPreview(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "Empty prompt" }
+        guard !trimmed.isEmpty else { return "No instructions yet" }
         let singleLine = trimmed.replacingOccurrences(of: "\n", with: " ")
         return singleLine.count > 120 ? String(singleLine.prefix(120)) + "…" : singleLine
     }
@@ -1226,7 +1226,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         let normalizedMode = mode.normalized
         self.draftPromptMode = normalizedMode
         self.draftIncludeContext = (normalizedMode == .edit)
-        self.draftPromptName = "Default \(normalizedMode.displayName)"
+        self.draftPromptName = "Default \(normalizedMode.displayName) Prompt"
         if let override = self.settings.defaultPromptOverride(for: normalizedMode) {
             self.draftPromptText = SettingsStore.stripBasePrompt(for: normalizedMode, from: override)
         } else {
