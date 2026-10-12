@@ -710,6 +710,9 @@ final class ASRService: ObservableObject {
             self.showMicPermissionError(for: status)
             return
         }
+        // Warm up while the user speaks so weights paged out during idle don't delay the result.
+        let provider = self.transcriptionProvider
+        Task { await provider.warmUp() }
         // Reset media pause state for this session
         self.didPauseMediaForThisSession = false
 

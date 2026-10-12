@@ -53,6 +53,9 @@ protocol TranscriptionProvider {
 
     /// Clear cached models
     func clearCache() async throws
+
+    /// Make a loaded model fast for the next transcription, e.g. after macOS paged its weights out while idle.
+    func warmUp() async
 }
 
 // Default implementation for optional methods
@@ -62,6 +65,7 @@ extension TranscriptionProvider {
     }
     func modelsExistOnDisk() -> Bool { return false }
     func clearCache() async throws {}
+    func warmUp() async {}
     func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
         try await self.transcribe(samples)
     }

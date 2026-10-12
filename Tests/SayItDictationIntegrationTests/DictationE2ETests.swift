@@ -302,6 +302,10 @@ final class DictationE2ETests: XCTestCase {
             let offlineProvider = QwenASRProvider(modelDirectory: directory, session: URLSession(configuration: configuration))
             try await offlineProvider.prepare(progressHandler: nil)
             XCTAssertTrue(offlineProvider.isReady)
+            // prepare() already warmed up, so this is the per-recording cost of a resident model.
+            let warmUpStarted = Date()
+            await offlineProvider.warmUp()
+            print("QWEN_E2E_WARMUP_SECONDS=\(Date().timeIntervalSince(warmUpStarted))")
 
             let audioPath = environment["QWEN_E2E_AUDIO_PATH"]
             let samples = try audioPath.map { try AudioFixtureLoader.load16kMonoFloatSamples(from: URL(fileURLWithPath: $0)) }

@@ -33,6 +33,20 @@ final class QwenASRProvider: TranscriptionProvider {
         try await self.runtime.load(from: self.store.directory)
         try Task.checkCancellation()
         self.isReady = true
+        // Compile kernels now so the first dictation after loading is not the slow one.
+        await self.warmUp()
+        #endif
+    }
+
+    func warmUp() async {
+        guard self.isReady else { return }
+        #if arch(arm64)
+        let started = Date()
+        await self.runtime.warmUp()
+        DebugLogger.shared.debug(
+            "QwenASRProvider: warm-up finished in \(String(format: "%.2f", Date().timeIntervalSince(started)))s",
+            source: "QwenASRProvider"
+        )
         #endif
     }
 
@@ -95,6 +109,18 @@ private actor QwenInferenceRuntime {
     func unload() {
         self.model = nil
         Memory.clearCache()
+    }
+
+    /// Decoding one token runs every layer, so weights macOS paged out while idle are read back
+    /// before real audio arrives instead of during the final transcription.
+    func warmUp() {
+        guard let model = self.model else { return }
+        _ = model.generate(
+            audio: MLXArray([Float](repeating: 0, count: 16000)),
+            maxTokens: 1,
+            temperature: 0,
+            chunkDuration: 30
+        )
     }
 
     func transcribe(_ samples: [Float], language: String?) throws -> String {
