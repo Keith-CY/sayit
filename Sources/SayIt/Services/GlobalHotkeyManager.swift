@@ -146,6 +146,15 @@ final class GlobalHotkeyManager: NSObject {
     func cancelActiveSession() -> Bool {
         var handled = false
 
+        // A hold-to-talk key may still be down. Forget it, so releasing it after Esc
+        // doesn't stop-and-transcribe the recording that was just cancelled.
+        self.pendingHoldModeStart?.cancel()
+        self.pendingHoldModeStart = nil
+        self.pendingHoldModeType = nil
+        self.isKeyPressed = false
+        self.isRewriteKeyPressed = false
+        self.isCommandModeKeyPressed = false
+
         if self.asrService.isRunning {
             DebugLogger.shared.info("Cancel requested - stopping recording without transcription", source: "GlobalHotkeyManager")
             Task { @MainActor in
@@ -382,7 +391,10 @@ final class GlobalHotkeyManager: NSObject {
             // Escape (keyCode 53): the visible overlay handles it first (closes its menu,
             // dismisses an outcome, or cancels and shows "Cancelled"); otherwise cancel any
             // recording without an overlay. The event is consumed only if something handled it.
-            if keyCode == 53, eventModifiers.isEmpty {
+            // During a session Esc counts even with modifiers down: with a hold-to-talk
+            // modifier shortcut (e.g. Right ⌥) the user is necessarily holding it.
+            let sessionActive = self.asrService.isRunning || NotchOverlayManager.shared.isOverlayVisible
+            if keyCode == 53, eventModifiers.isEmpty || sessionActive {
                 if NotchOverlayManager.shared.handleEscape() {
                     DebugLogger.shared.info("Escape pressed - handled by overlay", source: "GlobalHotkeyManager")
                     return nil

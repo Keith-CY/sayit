@@ -95,3 +95,19 @@ extension OverlayPhase {
         )
     }
 }
+
+extension OverlayPhase {
+    /// What the empty transcript area says before any words are available.
+    var transcriptPlaceholder: String? {
+        switch self {
+        case .starting, .listening:
+            let settings = SettingsStore.shared
+            let streams = settings.selectedSpeechModel.supportsStreaming && settings.enableStreamingPreview
+            return streams ? "Your words appear as you speak." : "Your words appear when you stop."
+        case .transcribing, .refining:
+            return "Your words appear in a moment."
+        default:
+            return nil
+        }
+    }
+}

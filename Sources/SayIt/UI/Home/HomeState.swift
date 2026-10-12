@@ -102,6 +102,8 @@ struct HomeTestAreaState: Equatable {
     var action: RecordingControlAction
     var isRunning: Bool
     var transcript: String
+    /// A dictation started from the shortcut is going into another app, not this test area.
+    var isDictatingElsewhere: Bool = false
     /// Parakeet custom-vocabulary status, shown under the test area when relevant.
     var wordBoostText: String?
 }

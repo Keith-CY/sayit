@@ -131,6 +131,7 @@ struct HomeScreen: View {
             ),
             isRunning: self.asr.isRunning,
             transcript: self.asr.finalText,
+            isDictatingElsewhere: self.asr.isRunning && !(NSApp.isActive && self.isTranscriptionFocused.wrappedValue),
             wordBoostText: self.settings.selectedSpeechModel == .parakeetTDT ? self.asr.wordBoostStatusText : nil
         )
     }

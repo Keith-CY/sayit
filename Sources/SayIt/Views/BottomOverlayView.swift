@@ -336,7 +336,8 @@ struct BottomOverlayContent: View {
                 text: self.contentState.cachedPreviewText,
                 font: self.layout.transcriptFont,
                 lines: self.layout.transcriptLines,
-                isDimmed: self.phase.isWorking
+                isDimmed: self.phase.isWorking,
+                placeholder: self.phase.transcriptPlaceholder
             )
 
             HStack(spacing: Space.md) {

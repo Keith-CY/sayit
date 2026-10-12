@@ -175,6 +175,10 @@ struct ContentView: View {
     @State private var accessibilityNeedsRestart: Bool = false
     @State private var showAccessibilityRestartAlert: Bool = false
     private let accessibilityRestartFlagKey = AppIdentity.defaultsAccessibilityRestartKey
+    /// After Accessibility is granted, how long to wait for the shortcut listener to start
+    /// (12 × 0.5s) before concluding SayIt needs a restart.
+    private static let listenerStartChecks = 12
+    private static let listenerStartCheckInterval: UInt64 = 500_000_000
     private let hasAutoRestartedForAccessibilityKey = AppIdentity.defaultsAutoRestartedAccessibilityKey
     @State private var accessibilityPollingTask: Task<Void, Never>?
 
@@ -2086,10 +2090,16 @@ struct ContentView: View {
                     self.accessibilityEnabled = true
                 }
 
-                // Give the hotkey manager a moment to reinitialize (see onChange of accessibilityEnabled).
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                // The hotkey manager reinitializes asynchronously (see onChange of
+                // accessibilityEnabled): it waits before creating its event tap and retries.
+                // Only ask for a restart if the listener still isn't up after that window.
+                var healthy = false
+                for _ in 0..<Self.listenerStartChecks {
+                    try? await Task.sleep(nanoseconds: Self.listenerStartCheckInterval)
+                    healthy = await MainActor.run { self.hotkeyManager?.validateEventTapHealth() ?? false }
+                    if healthy { break }
+                }
                 await MainActor.run {
-                    let healthy = self.hotkeyManager?.validateEventTapHealth() ?? false
                     self.hotkeyManagerInitialized = healthy
                     guard !healthy else {
                         self.accessibilityNeedsRestart = false

@@ -292,7 +292,8 @@ struct NotchOverlayContent: View {
                 text: self.contentState.cachedPreviewText,
                 font: AppFont.Overlay.transcriptCompact,
                 lines: Self.transcriptLines,
-                isDimmed: self.phase.isWorking
+                isDimmed: self.phase.isWorking,
+                placeholder: self.phase.transcriptPlaceholder
             )
 
             self.footer

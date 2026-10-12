@@ -422,6 +422,17 @@ struct OverlayTranscriptText: View {
     let lines: Int
     /// Reduced emphasis while the transcript is being processed.
     var isDimmed: Bool = false
+    /// Shown while there are no words yet, so the area never reads as a blank, broken box
+    /// (models that only transcribe after you stop leave it empty for the whole session).
+    var placeholder: String?
+
+    private var showsPlaceholder: Bool {
+        self.text.isEmpty && !(self.placeholder ?? "").isEmpty
+    }
+
+    private var displayText: String {
+        self.showsPlaceholder ? (self.placeholder ?? "") : self.text
+    }
 
     @State private var boxHeight: CGFloat = 0
     @State private var textHeight: CGFloat = 0
@@ -436,7 +447,7 @@ struct OverlayTranscriptText: View {
     var body: some View {
         Group {
             if self.lines <= 1 {
-                self.styled(Text(self.text))
+                self.styled(Text(self.displayText))
                     .lineLimit(1, reservesSpace: true)
                     .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -452,7 +463,7 @@ struct OverlayTranscriptText: View {
                     .padding(.top, Space.xs)
                     .onGeometryChange(for: CGFloat.self, of: \.size.height) { self.boxHeight = $0 }
                     .overlay(alignment: .bottomLeading) {
-                        self.styled(Text(self.text))
+                        self.styled(Text(self.displayText))
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .onGeometryChange(for: CGFloat.self, of: \.size.height) { self.textHeight = $0 }
@@ -480,7 +491,9 @@ struct OverlayTranscriptText: View {
     private func styled(_ text: Text) -> some View {
         text
             .font(self.font)
-            .foregroundStyle(self.isDimmed ? self.theme.overlay.tertiaryText : self.theme.overlay.primaryText)
+            .foregroundStyle(
+                self.isDimmed || self.showsPlaceholder ? self.theme.overlay.tertiaryText : self.theme.overlay.primaryText
+            )
             .multilineTextAlignment(.leading)
     }
 }

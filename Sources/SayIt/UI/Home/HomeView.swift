@@ -327,7 +327,7 @@ struct HomeView: View {
 
             VStack(alignment: .leading, spacing: Space.xs) {
                 HStack(spacing: Space.sm) {
-                    Text(self.state.aiEnhancementConfigured ? "AI Enhancement is set up" : "Clean up text with AI")
+                    Text(self.state.aiEnhancementConfigured ? "AI Enhancement" : "Clean up text with AI")
                         .font(AppFont.rowTitle)
                     Text("Optional")
                         .font(AppFont.micro)
@@ -533,7 +533,14 @@ struct HomeView: View {
     @ViewBuilder
     private var transcriptPlaceholder: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            if self.testArea.isRunning {
+            if self.testArea.isDictatingElsewhere {
+                Text("Dictating into another app…")
+                    .font(AppFont.transcript)
+                    .foregroundStyle(self.theme.palette.secondaryText)
+                Text("Your words go where your cursor is. They also appear here when you stop.")
+                    .font(AppFont.caption)
+                    .foregroundStyle(self.theme.palette.tertiaryText)
+            } else if self.testArea.isRunning {
                 Text("Listening… speak now.")
                     .font(AppFont.transcript)
                     .foregroundStyle(self.theme.palette.secondaryText)
