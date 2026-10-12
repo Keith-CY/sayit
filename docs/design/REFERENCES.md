@@ -58,7 +58,9 @@ comparison only; we do not copy layouts, copy or assets.
   rewriting text the viewer is reading. Apple switches between Computer Audio and
   Microphone; SayIt captions both at once, marks whose words each line is, and never
   captions the speakers' sound twice. Apple's guide doesn't mention speaker labels;
-  SayIt names each turn (“Speaker 1”, “Speaker 2”).
+  SayIt names each turn (“Speaker 1”, “Speaker 2”). Like Apple's window, SayIt's panel
+  moves and resizes; unlike it, the viewer can scroll back, translate side by side,
+  and keep each session as a transcript.
 
 ## Motion (unverified — shot pages blocked automated fetch)
 

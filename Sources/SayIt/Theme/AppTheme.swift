@@ -161,6 +161,13 @@ struct OverlayPalette {
     let edit = Color(red: 0.42, green: 0.62, blue: 1.0)
     let command = Color(red: 0.98, green: 0.72, blue: 0.30)
 
+    /// "You" in Live Captions: microphone lines read apart from Mac audio at a glance
+    /// (their source mark says it too). Settled, draft and forming steps all stay above
+    /// 4.5:1 on the black surface (12.4, 7.5 and 5.1).
+    let you = Color(red: 0.45, green: 0.85, blue: 0.80)
+    let youDraft = Color(red: 0.45, green: 0.85, blue: 0.80).opacity(0.78)
+    let youForming = Color(red: 0.45, green: 0.85, blue: 0.80).opacity(0.62)
+
     let success = Color(nsColor: .systemGreen)
     let warning = Color(nsColor: .systemOrange)
     let error = Color(nsColor: .systemRed)

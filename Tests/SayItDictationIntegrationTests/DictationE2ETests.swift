@@ -356,6 +356,80 @@ final class DictationE2ETests: XCTestCase {
     }
 
     @MainActor
+    func testLiveCaptionLanguage_mapsIdentifiersAndPicksDefaults() {
+        XCTAssertEqual(LiveCaptionLanguage(languageIdentifier: "zh-Hans-CN"), .chinese)
+        XCTAssertEqual(LiveCaptionLanguage(languageIdentifier: "zh-TW"), .chineseTraditional)
+        XCTAssertEqual(LiveCaptionLanguage(languageIdentifier: "ja-JP"), .japanese)
+        XCTAssertNil(LiveCaptionLanguage(languageIdentifier: "nl"))
+        XCTAssertFalse(LiveCaptionLanguage.captionable.contains(.russian), "Apple's speech model has no Russian")
+
+        XCTAssertEqual(LiveCaptionLanguage.initial(dictation: .chineseEnglishMixed, preferredLanguages: ["en-US"]), .chinese)
+        XCTAssertEqual(LiveCaptionLanguage.initial(dictation: .auto, preferredLanguages: ["ja-JP", "en-US"]), .japanese)
+        XCTAssertEqual(LiveCaptionLanguage.initial(dictation: .russian, preferredLanguages: ["ru-RU"]), .english)
+
+        // Watching Japanese on a Chinese Mac: translate into Chinese.
+        XCTAssertEqual(LiveCaptionLanguage.suggestedTarget(for: .japanese, preferredLanguages: ["zh-Hans-CN", "en"]), .chinese)
+        // Captions already in the Mac's language: English, or Chinese for English captions.
+        XCTAssertEqual(LiveCaptionLanguage.suggestedTarget(for: .chineseTraditional, preferredLanguages: ["zh-Hans-CN"]), .english)
+        XCTAssertEqual(LiveCaptionLanguage.suggestedTarget(for: .english, preferredLanguages: ["en-US"]), .chinese)
+    }
+
+    @MainActor
+    func testLiveCaptionRecord_writesTurnsInSpokenOrderWithTranslations() throws {
+        let start = Date(timeIntervalSince1970: 1_760_000_000) // 2025-10-09 08:53:20 UTC
+        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        var record = LiveCaptionRecord(startedAt: start, language: .japanese)
+        record.translationTarget = .chinese
+        func entry(_ id: String, _ seconds: Double, _ source: LiveCaptionSource, _ speaker: Int?, _ text: String) -> LiveCaptionRecord.Entry {
+            .init(id: id, time: start.addingTimeInterval(seconds), source: source, speaker: speaker, text: text)
+        }
+        // Settled out of order: the microphone line waited for its echo check.
+        record.add(entry("macAudio-0", 1, .macAudio, 1, "こんにちは。"))
+        record.add(entry("macAudio-1", 4, .macAudio, 1, "始めましょう。"))
+        record.add(entry("microphone-0", 2.5, .microphone, nil, "はい。"))
+        record.add(entry("macAudio-2", 90, .macAudio, 2, "質問があります。"))
+        record.add(entry("macAudio-0", 1, .macAudio, 1, "duplicate"))
+        record.setTranslation("你好。", for: "macAudio-0")
+
+        XCTAssertEqual(record.markdown(timeZone: utc), """
+        # Live Captions 2025-10-09 08:53
+
+        日本語 → 中文
+
+        **08:53:21 · Speaker 1**
+
+        こんにちは。
+        > 你好。
+
+        **08:53:22 · You**
+
+        はい。
+
+        **08:53:24 · Speaker 1**
+
+        始めましょう。
+
+        **08:54:50 · Speaker 2**
+
+        質問があります。
+
+        """)
+        XCTAssertEqual(LiveCaptionRecord.fileName(startedAt: start, timeZone: utc), "Live Captions 2025-10-09 08.53.20.md")
+    }
+
+    @MainActor
+    func testLiveCaptionRecord_marksTimeWithinALongTurn() throws {
+        let start = Date(timeIntervalSince1970: 1_760_000_000)
+        var record = LiveCaptionRecord(startedAt: start, language: .english)
+        for (index, seconds) in [0.0, 30, 59, 61].enumerated() {
+            record.add(.init(id: "macAudio-\(index)", time: start.addingTimeInterval(seconds), source: .macAudio, text: "Line \(index)."))
+        }
+        let markdown = try record.markdown(timeZone: XCTUnwrap(TimeZone(identifier: "UTC")))
+        // One voice, no microphone: times only, no names; a new mark after a minute.
+        XCTAssertTrue(markdown.contains("**08:53:20**\n\nLine 0.\n\nLine 1.\n\nLine 2.\n\n**08:54:21**\n\nLine 3.\n"), markdown)
+    }
+
+    @MainActor
     func testLiveCaptionTranscript_longCommittedPhraseClosesItsNewLine() {
         // Unbroken speech: Apple commits only when asked, about 10 s at a time.
         var transcript = LiveCaptionTranscript()
@@ -500,6 +574,143 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    /// Japanese captions: Apple's Japanese model (downloaded the first time) and Qwen in
+    /// Japanese; the session's transcript is saved as Markdown.
+    @MainActor
+    func testLiveCaptionsEndToEnd_captionsJapaneseAndSavesTheTranscript() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "sayit-live-captions-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let mac = MicrophoneFeed()
+        let service = try Self.startLiveCaptions(
+            env: "RUN_LIVE_CAPTION_E2E_TESTS",
+            macAudio: mac,
+            language: .japanese,
+            transcriptFolder: folder
+        )
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 180) { service.viewState.phase != .preparing }
+        XCTAssertEqual(service.viewState.phase, .listening)
+
+        mac.play(try await Self.render("今日はリリースの話をしましょう。テストは全部通りました。", voice: "Kyoko"))
+        try await Self.waitUntil(timeout: 30) {
+            let rows = service.viewState.rows
+            return !rows.isEmpty && !rows.contains(where: \.isDraft)
+        }
+        let rows = service.viewState.rows
+        Self.printRows(rows, prefix: "LIVE_CAPTION_JA")
+        let joined = rows.map(\.text).joined()
+        XCTAssertTrue(joined.unicodeScalars.contains { (0x3040 ... 0x30FF).contains(Int($0.value)) }, "Expected kana: \(joined)")
+        XCTAssertTrue(joined.contains("リリース"), joined)
+
+        service.stop()
+        try await Self.waitUntil(timeout: 10) {
+            ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).contains { $0.hasSuffix(".md") }
+        }
+        let file = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first)
+        let markdown = try String(contentsOf: file, encoding: .utf8)
+        print("LIVE_CAPTION_JA_TRANSCRIPT=\(markdown)")
+        XCTAssertTrue(markdown.hasPrefix("# Live Captions "), markdown)
+        XCTAssertTrue(markdown.contains("日本語"), markdown)
+        XCTAssertTrue(markdown.contains("リリース"), markdown)
+    }
+
+    /// Switching language mid-session restarts Apple's recognizers; earlier lines stay and
+    /// later speech is captioned in the new language.
+    @MainActor
+    func testLiveCaptionsEndToEnd_switchesLanguageMidSession() async throws {
+        let mac = MicrophoneFeed()
+        let service = try Self.startLiveCaptions(env: "RUN_LIVE_CAPTION_E2E_TESTS", macAudio: mac, language: .english)
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
+
+        mac.play(try await Self.render("Live captions now refine every line on this Mac.", voice: "Samantha"))
+        try await Self.waitUntil(timeout: 30) { service.viewState.rows.contains { !$0.isDraft } }
+
+        service.setLanguage(.japanese, remember: false)
+        try await Self.waitUntil(timeout: 180) {
+            service.viewState.language == .japanese && !service.viewState.isChangingLanguage
+        }
+        XCTAssertEqual(service.viewState.language, .japanese)
+        XCTAssertEqual(service.viewState.phase, .listening)
+
+        mac.play(try await Self.render("来週の月曜日にリリースします。", voice: "Kyoko"))
+        try await Self.waitUntil(timeout: 30) {
+            service.viewState.rows.contains { !$0.isDraft && $0.text.unicodeScalars.contains { (0x3040 ... 0x30FF).contains(Int($0.value)) } }
+        }
+        let rows = service.viewState.rows
+        Self.printRows(rows, prefix: "LIVE_CAPTION_SWITCH")
+        XCTAssertTrue(Self.normalize(rows.map(\.text).joined(separator: " ")).contains("captions"), "English lines stay")
+    }
+
+    /// Translation on this Mac, shown next to each settled line. Needs the Japanese →
+    /// Chinese languages downloaded (the panel's Download… button does that).
+    @MainActor
+    func testLiveCaptionsEndToEnd_translatesSettledLines() async throws {
+        guard #available(macOS 26.0, *) else { throw XCTSkip("Live Captions need macOS 26.") }
+        guard await LiveCaptionTranslator.readiness(from: .japanese, to: .chinese) == .ready else {
+            throw XCTSkip("Download Japanese and Chinese for translation first (System Settings → General → Language & Region → Translation Languages).")
+        }
+        let mac = MicrophoneFeed()
+        let service = try Self.startLiveCaptions(
+            env: "RUN_LIVE_CAPTION_E2E_TESTS",
+            macAudio: mac,
+            language: .japanese,
+            translateInto: .chinese
+        )
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 60) { service.viewState.translation?.status == .ready }
+
+        mac.play(try await Self.render("今日はリリースの話をしましょう。", voice: "Kyoko"))
+        try await Self.waitUntil(timeout: 30) { service.viewState.rows.contains { $0.translation != nil } }
+        let rows = service.viewState.rows
+        for row in rows {
+            print("LIVE_CAPTION_TRANSLATE_LINE text=\(row.text) translation=\(row.translation ?? "-")")
+        }
+        let translation = try XCTUnwrap(rows.compactMap(\.translation).first)
+        XCTAssertFalse(translation.unicodeScalars.contains { (0x3040 ... 0x30FF).contains(Int($0.value)) }, "No kana in Chinese: \(translation)")
+        XCTAssertTrue(translation.contains("发布"), translation)
+    }
+
+    /// Keeps a real panel full of captions on screen for a while, so its controls can be
+    /// clicked, scrolled and resized from outside (synthetic events). Prints what changed.
+    @MainActor
+    func testLiveCaptionsPanel_holdsForInspection() async throws {
+        let mac = MicrophoneFeed()
+        let environment = ProcessInfo.processInfo.environment
+        // LIVE_CAPTION_HOLD_LANGUAGE=japanese speaks Japanese; LIVE_CAPTION_HOLD_TARGET=chinese translates.
+        let language = environment["LIVE_CAPTION_HOLD_LANGUAGE"].flatMap(LiveCaptionLanguage.init(rawValue:)) ?? .english
+        let target = environment["LIVE_CAPTION_HOLD_TARGET"].flatMap(LiveCaptionLanguage.init(rawValue:))
+        let service = try Self.startLiveCaptions(
+            env: "RUN_LIVE_CAPTION_PANEL_HOLD",
+            macAudio: mac,
+            language: language,
+            translateInto: target
+        )
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
+        let japanese = language == .japanese
+        let passage = japanese
+            ? "今日はリリースの話をしましょう。テストは全部通りました。来週の月曜日に出します。"
+            : "The panel keeps every line, so you can scroll back and read what was said a minute ago."
+        for _ in 0..<6 {
+            mac.play(try await Self.render(passage, voice: japanese ? "Kyoko" : "Samantha"))
+            mac.play([Float](repeating: 0, count: 16000))
+        }
+        let seconds = Double(ProcessInfo.processInfo.environment["LIVE_CAPTION_HOLD_SECONDS"] ?? "") ?? 90
+        let end = Date().addingTimeInterval(seconds)
+        var last = ""
+        while Date() < end {
+            let state = service.viewState
+            let summary = "rows=\(state.rows.count) microphone=\(state.microphone) speakers=\(state.speakers) "
+                + "translation=\(state.translation.map { "\($0.status)" } ?? "off") translated=\(state.rows.filter { $0.translation != nil }.count)"
+            if summary != last {
+                print("LIVE_CAPTION_HOLD \(summary)")
+                last = summary
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
     /// The microphone hears exactly what the Mac plays (speakers, no headphones): those
     /// words are already captioned, so no microphone line may appear.
     @MainActor
@@ -612,18 +823,33 @@ final class DictationE2ETests: XCTestCase {
     }
 
     /// Starts Live Captions when `env` is set, with the microphone on only when given one.
+    /// With `macAudio`, Mac audio is that feed instead of what the Mac plays (silent tests).
+    /// Uses its own options (never the saved settings, which the installed app shares) and
+    /// saves transcripts to a temporary folder.
     @MainActor
     private static func startLiveCaptions(
         env: String,
         microphone: CaptionSourceFactory? = nil,
-        labelSpeakers: Bool = false
+        macAudio: MicrophoneFeed? = nil,
+        labelSpeakers: Bool = false,
+        language: LiveCaptionLanguage = .chinese,
+        translateInto target: LiveCaptionLanguage? = nil,
+        transcriptFolder: URL = FileManager.default.temporaryDirectory.appending(path: "sayit-live-captions-\(UUID().uuidString)")
     ) throws -> LiveCaptionService {
         guard ProcessInfo.processInfo.environment[env] == "1" else {
             throw XCTSkip("Set \(env)=1 to play speech aloud and caption it.")
         }
         guard LiveCaptionService.isSupported else { throw XCTSkip("Live Captions need macOS 26.") }
         let service = LiveCaptionService.shared
-        service.start(includeMicrophone: microphone != nil, labelSpeakers: labelSpeakers, makeMicrophone: microphone)
+        service.start(options: LiveCaptionOptions(
+            language: language,
+            translationTarget: target,
+            includeMicrophone: microphone != nil,
+            labelSpeakers: labelSpeakers,
+            makeMicrophone: microphone,
+            makeMacAudio: macAudio.map { feed in { FakeMicrophone(feed: feed, onSamples: $0) } },
+            transcriptFolder: transcriptFolder
+        ))
         return service
     }
 
