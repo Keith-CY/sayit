@@ -29,6 +29,8 @@ struct SayItApp: App {
                 .sayItTheme()
         }
         .defaultSize(width: 1000, height: 700)
-        .windowResizability(.contentSize)
+        // Content sets only the minimum size. `.contentSize` re-fitted the window to each
+        // page's ideal size, undoing the user's resize whenever they switched pages.
+        .windowResizability(.contentMinSize)
     }
 }

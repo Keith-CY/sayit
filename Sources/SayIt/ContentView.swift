@@ -208,6 +208,12 @@ struct ContentView: View {
                 self.detailView
             }
             .navigationSplitViewStyle(.balanced)
+            // One fixed minimum for every page. The window takes its minimum from the content,
+            // so per-page minimums would resize the window whenever the page changed.
+            .frame(
+                minWidth: AppWindowHelper.minimumWindowSize.width,
+                minHeight: AppWindowHelper.minimumWindowSize.height
+            )
         )
 
         let nav = layout.onChange(of: self.menuBarManager.requestedNavigationDestination) { _, destination in

@@ -510,6 +510,9 @@ final class MenuBarManager: ObservableObject {
 
         // Host inside an AppKit window
         let hostingController = NSHostingController(rootView: rootView)
+        // Only the content's minimum size constrains the window; the default sizing also
+        // applies the content's ideal size, which resets a resized window on page changes.
+        hostingController.sizingOptions = [.minSize]
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: AppWindowHelper.defaultWindowSize.width, height: AppWindowHelper.defaultWindowSize.height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -518,10 +521,14 @@ final class MenuBarManager: ObservableObject {
         )
         window.title = AppIdentity.displayName
         window.animationBehavior = .none
-        AppWindowHelper.makeUsableMainWindow(window)
         window.isReleasedWhenClosed = false
         window.contentViewController = hostingController
-        window.setFrame(AppWindowHelper.defaultWindowFrame(), display: false)
+        // Reopen at the size and position the user last left it.
+        if !window.setFrameUsingName(AppWindowHelper.frameAutosaveName) {
+            window.setFrame(AppWindowHelper.defaultWindowFrame(), display: false)
+        }
+        window.setFrameAutosaveName(AppWindowHelper.frameAutosaveName)
+        AppWindowHelper.makeUsableMainWindow(window)
         AppWindowHelper.bringToFront(window)
         self.hostedWindow = window
 
