@@ -441,7 +441,6 @@ struct WelcomeView: View {
                                     .frame(maxWidth: .infinity)
                                 }
                                 .buttonStyle(PremiumButtonStyle(isRecording: self.asr.isRunning))
-                                .buttonHoverEffect()
                                 .scaleEffect(self.asr.isRunning ? 1.02 : 1.0)
                                 .animation(.spring(response: 0.3), value: self.asr.isRunning)
                                 .disabled(

@@ -317,6 +317,16 @@ final class NotchOverlayManager {
         NotchContentState.shared.updateTranscription(text)
     }
 
+    /// Updates what the overlay communicates and announces it to VoiceOver.
+    /// Pipeline code reports phases here; the overlay views decide how to render them.
+    func present(_ phase: OverlayPhase) {
+        guard NotchContentState.shared.phase != phase else { return }
+        NotchContentState.shared.setPhase(phase)
+        if phase != .idle {
+            phase.announce()
+        }
+    }
+
     func setProcessing(_ processing: Bool) {
         NotchContentState.shared.setProcessing(processing)
 

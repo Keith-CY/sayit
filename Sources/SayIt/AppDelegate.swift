@@ -23,9 +23,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Bring the app to front on initial launch.
         // Use a few delayed retries because SwiftUI window creation can lag app launch callbacks.
         self.forceFrontOnLaunch()
-
-        // Note: App UI is designed with dark color scheme in mind
-        // All gradients and effects are optimized for dark mode
     }
 
     func applicationWillTerminate(_ notification: Notification) {

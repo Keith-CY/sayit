@@ -44,6 +44,11 @@
 			path = Sources/SayIt;
 			sourceTree = "<group>";
 		};
+		7CDB0A402F3C4D5600FB7CAD /* SayItUISnapshots */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SayItUISnapshots;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +98,7 @@
 			isa = PBXGroup;
 			children = (
 				7CDB0A252F3C4D5600FB7CAD /* SayItDictationIntegrationTests */,
+				7CDB0A402F3C4D5600FB7CAD /* SayItUISnapshots */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -174,6 +180,9 @@
 			);
 			dependencies = (
 				7CDB0A312F3C4D5600FB7CAD /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				7CDB0A402F3C4D5600FB7CAD /* SayItUISnapshots */,
 			);
 			name = SayItDictationIntegrationTests;
 			productName = SayItDictationIntegrationTests;

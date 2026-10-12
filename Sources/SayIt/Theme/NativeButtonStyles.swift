@@ -1,380 +1,297 @@
 import SwiftUI
 
-// MARK: - Primary (Prominent) Button
+// MARK: - Button System
+//
+// Four roles, three sizes. See docs/design/DESIGN.md § Components.
+//   .sayItPrimary      one per view: the action that moves the task forward
+//   .sayItSecondary    supporting actions
+//   .sayItQuiet        low-emphasis inline actions (text-only, accent colored)
+//   .sayItDestructive  removes data; always paired with a confirmation
+// Icon-only buttons use `IconButton`, which requires an accessibility label.
 
-struct GlassButtonStyle: ButtonStyle {
-    var height: CGFloat? = nil
+enum SayItButtonSize {
+    case small
+    case regular
+    case large
 
-    func makeBody(configuration: Configuration) -> some View {
-        GlassButton(configuration: configuration, height: self.height)
+    var height: CGFloat {
+        switch self {
+        case .small: return 24
+        case .regular: return 30
+        case .large: return 40
+        }
     }
 
-    private struct GlassButton: View {
-        @Environment(\.theme) private var theme
-        @State private var isHovered = false
-        let configuration: ButtonStyle.Configuration
-        let height: CGFloat?
-
-        private var shape: RoundedRectangle {
-            RoundedRectangle(cornerRadius: self.theme.metrics.corners.md, style: .continuous)
+    var horizontalPadding: CGFloat {
+        switch self {
+        case .small: return Space.sm
+        case .regular: return Space.md
+        case .large: return Space.xl
         }
+    }
 
-        var body: some View {
-            self.configuration.label
-                .fontWeight(.semibold)
-                .padding(.horizontal, self.theme.metrics.spacing.lg)
-                .padding(.vertical, self.theme.metrics.spacing.sm)
-                .frame(height: self.height ?? 36)
-                .foregroundStyle(self.theme.palette.primaryText)
-                .background(self.theme.materials.card, in: self.shape)
-                .background(
-                    self.shape
-                        .fill(self.theme.palette.cardBackground)
-                        .overlay(
-                            self.shape.stroke(
-                                self.theme.palette.cardBorder.opacity(self.isHovered ? 0.45 : 0.25),
-                                lineWidth: 1
-                            )
-                        )
-                )
-                .overlay(
-                    self.shape
-                        .stroke(self.theme.palette.accent.opacity(self.isHovered ? 0.25 : 0.1), lineWidth: 1)
-                        .blendMode(.plusLighter)
-                )
-                .shadow(
-                    color: self.theme.palette.cardBorder.opacity(self.isHovered ? 0.45 : 0.22),
-                    radius: self.isHovered ? self.theme.metrics.cardShadow.radius : max(self.theme.metrics.cardShadow.radius - 3, 2),
-                    x: 0,
-                    y: self.isHovered ? self.theme.metrics.cardShadow.y : self.theme.metrics.cardShadow.y - 2
-                )
-                .scaleEffect(self.configuration.isPressed ? 0.97 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
-                .onHover { self.isHovered = $0 }
+    var font: Font {
+        switch self {
+        case .small: return AppFont.captionEmphasis
+        case .regular: return AppFont.bodyEmphasis
+        case .large: return AppFont.bodyEmphasis
+        }
+    }
+
+    var radius: CGFloat {
+        switch self {
+        case .small: return Radius.sm
+        case .regular: return Radius.md
+        case .large: return Radius.lg
         }
     }
 }
 
-// MARK: - Primary Accent Button
+enum SayItButtonRole {
+    case primary
+    case secondary
+    case quiet
+    case destructive
+}
+
+struct SayItButtonStyle: ButtonStyle {
+    var role: SayItButtonRole = .primary
+    var size: SayItButtonSize = .regular
+    var fullWidth: Bool = false
+    /// Primary only: paints the button in the recording color (e.g. "Stop Recording").
+    var isRecording: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        SayItButton(
+            configuration: configuration,
+            role: self.role,
+            size: self.size,
+            fullWidth: self.fullWidth,
+            isRecording: self.isRecording
+        )
+    }
+
+    private struct SayItButton: View {
+        @Environment(\.theme) private var theme
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var isHovered = false
+
+        let configuration: ButtonStyle.Configuration
+        let role: SayItButtonRole
+        let size: SayItButtonSize
+        let fullWidth: Bool
+        let isRecording: Bool
+
+        private var shape: RoundedRectangle {
+            RoundedRectangle(cornerRadius: self.size.radius, style: .continuous)
+        }
+
+        private var isInteractive: Bool {
+            self.isEnabled
+        }
+
+        var body: some View {
+            let palette = self.theme.palette
+            let pressed = self.configuration.isPressed && self.isInteractive
+            let hovered = self.isHovered && self.isInteractive
+
+            self.configuration.label
+                .font(self.size.font)
+                .lineLimit(1)
+                .padding(.horizontal, self.role == .quiet ? Space.xs : self.size.horizontalPadding)
+                .frame(maxWidth: self.fullWidth ? .infinity : nil)
+                .frame(minHeight: self.size.height)
+                .foregroundStyle(self.foreground(palette))
+                .background(self.background(palette, hovered: hovered, pressed: pressed), in: self.shape)
+                .overlay(self.outline(palette, hovered: hovered))
+                .contentShape(self.shape)
+                .opacity(self.isInteractive ? 1 : 0.45)
+                .scaleEffect(pressed && !self.reduceMotion ? 0.98 : 1)
+                .animation(Motion.resolved(Motion.snappy, reduceMotion: self.reduceMotion), value: hovered)
+                .animation(Motion.resolved(Motion.snappy, reduceMotion: self.reduceMotion), value: pressed)
+                .onHover { self.isHovered = $0 }
+        }
+
+        private func foreground(_ palette: AppTheme.Palette) -> Color {
+            switch self.role {
+            case .primary:
+                return self.isRecording ? .white : palette.onAccent
+            case .secondary:
+                return palette.primaryText
+            case .quiet:
+                return palette.accentForeground
+            case .destructive:
+                return palette.error
+            }
+        }
+
+        private func background(_ palette: AppTheme.Palette, hovered: Bool, pressed: Bool) -> Color {
+            switch self.role {
+            case .primary:
+                let base = self.isRecording ? palette.recording : palette.accent
+                return pressed ? base.opacity(0.82) : (hovered ? base.opacity(0.92) : base)
+            case .secondary:
+                return pressed ? palette.surfaceHover.opacity(1.6) : (hovered ? palette.surfaceHover : palette.surfaceRaised)
+            case .quiet:
+                return hovered || pressed ? palette.accentSubtle : .clear
+            case .destructive:
+                return hovered || pressed ? palette.subtle(palette.error) : palette.surfaceRaised
+            }
+        }
+
+        @ViewBuilder
+        private func outline(_ palette: AppTheme.Palette, hovered: Bool) -> some View {
+            switch self.role {
+            case .primary, .quiet:
+                EmptyView()
+            case .secondary, .destructive:
+                self.shape.strokeBorder(palette.hairline, lineWidth: 1)
+            }
+        }
+    }
+}
+
+extension ButtonStyle where Self == SayItButtonStyle {
+    static var sayItPrimary: SayItButtonStyle { SayItButtonStyle(role: .primary) }
+    static var sayItSecondary: SayItButtonStyle { SayItButtonStyle(role: .secondary) }
+    static var sayItQuiet: SayItButtonStyle { SayItButtonStyle(role: .quiet) }
+    static var sayItDestructive: SayItButtonStyle { SayItButtonStyle(role: .destructive) }
+
+    static func sayIt(
+        _ role: SayItButtonRole,
+        size: SayItButtonSize = .regular,
+        fullWidth: Bool = false,
+        isRecording: Bool = false
+    ) -> SayItButtonStyle {
+        SayItButtonStyle(role: role, size: size, fullWidth: fullWidth, isRecording: isRecording)
+    }
+}
+
+// MARK: - Icon Button
+
+/// Icon-only button. The label is spoken by VoiceOver and shown as the tooltip.
+struct IconButton: View {
+    @Environment(\.theme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    let systemName: String
+    let label: String
+    var role: SayItButtonRole = .secondary
+    var size: CGFloat = 26
+    let action: () -> Void
+
+    init(
+        _ label: String,
+        systemName: String,
+        role: SayItButtonRole = .secondary,
+        size: CGFloat = 26,
+        action: @escaping () -> Void
+    ) {
+        self.label = label
+        self.systemName = systemName
+        self.role = role
+        self.size = size
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: self.action) {
+            Image(systemName: self.systemName)
+                .font(AppFont.icon)
+                .frame(width: self.size, height: self.size)
+                .foregroundStyle(self.foreground)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                        .fill(self.isHovered && self.isEnabled ? self.theme.palette.surfaceHover : .clear)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .opacity(self.isEnabled ? 1 : 0.45)
+        .onHover { self.isHovered = $0 }
+        .motion(Motion.snappy, value: self.isHovered)
+        .help(self.label)
+        .accessibilityLabel(self.label)
+    }
+
+    private var foreground: Color {
+        switch self.role {
+        case .destructive:
+            return self.isHovered ? self.theme.palette.error : self.theme.palette.secondaryText
+        case .quiet, .primary:
+            return self.theme.palette.accentForeground
+        case .secondary:
+            return self.isHovered ? self.theme.palette.primaryText : self.theme.palette.secondaryText
+        }
+    }
+}
+
+// MARK: - Legacy Styles
+//
+// Thin wrappers so existing call sites render with the new system while they are
+// migrated. New code must use `.sayIt…` styles directly.
+
+struct GlassButtonStyle: ButtonStyle {
+    var height: CGFloat?
+
+    func makeBody(configuration: Configuration) -> some View {
+        SayItButtonStyle(role: .secondary, size: .regular).makeBody(configuration: configuration)
+    }
+}
 
 struct PremiumButtonStyle: ButtonStyle {
     var isRecording: Bool = false
     var height: CGFloat = 44
 
     func makeBody(configuration: Configuration) -> some View {
-        PrimaryButton(configuration: configuration, isRecording: self.isRecording, height: self.height)
-    }
-
-    private struct PrimaryButton: View {
-        @Environment(\.theme) private var theme
-        @State private var isHovered = false
-        let configuration: ButtonStyle.Configuration
-        let isRecording: Bool
-        let height: CGFloat
-
-        private var shape: RoundedRectangle {
-            RoundedRectangle(cornerRadius: self.theme.metrics.corners.lg, style: .continuous)
-        }
-
-        private var baseGradient: LinearGradient {
-            if self.isRecording {
-                return LinearGradient(
-                    colors: [
-                        Color(nsColor: .systemRed),
-                        Color(nsColor: .systemRed).opacity(0.8),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
-
-            return LinearGradient(
-                colors: [
-                    self.theme.palette.accent.opacity(0.95),
-                    self.theme.palette.accent.opacity(0.75),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
-
-        var body: some View {
-            self.configuration.label
-                .fontWeight(.semibold)
-                .frame(maxWidth: .infinity)
-                .frame(height: self.height)
-                .foregroundStyle(self.isRecording ? Color.white : self.theme.palette.primaryText)
-                .background(
-                    self.shape
-                        .fill(self.baseGradient)
-                        .overlay(
-                            self.shape.stroke(
-                                Color.white.opacity(self.isHovered ? 0.35 : 0.2),
-                                lineWidth: 1
-                            )
-                        )
-                )
-                .shadow(
-                    color: (self.isRecording ? Color(nsColor: .systemRed) : self.theme.palette.accent)
-                        .opacity(self.isHovered ? 0.45 : 0.25),
-                    radius: self.isHovered ? self.theme.metrics.elevatedCardShadow.radius : max(self.theme.metrics.cardShadow.radius - 2, 2),
-                    x: 0,
-                    y: self.isHovered ? self.theme.metrics.elevatedCardShadow.y : self.theme.metrics.cardShadow.y
-                )
-                .scaleEffect(self.configuration.isPressed ? 0.98 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.75), value: self.isHovered)
-                .animation(.spring(response: 0.18, dampingFraction: 0.75), value: self.configuration.isPressed)
-                .onHover { self.isHovered = $0 }
-        }
+        SayItButtonStyle(role: .primary, size: .large, fullWidth: true, isRecording: self.isRecording)
+            .makeBody(configuration: configuration)
     }
 }
-
-// MARK: - Secondary Button
 
 struct SecondaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        SecondaryButton(configuration: configuration)
-    }
-
-    private struct SecondaryButton: View {
-        @Environment(\.theme) private var theme
-        @State private var isHovered = false
-        let configuration: ButtonStyle.Configuration
-
-        private var shape: RoundedRectangle {
-            RoundedRectangle(cornerRadius: self.theme.metrics.corners.lg, style: .continuous)
-        }
-
-        var body: some View {
-            self.configuration.label
-                .fontWeight(.semibold)
-                .frame(maxWidth: .infinity)
-                .frame(height: 42)
-                .foregroundStyle(self.theme.palette.primaryText)
-                .background(self.theme.materials.card, in: self.shape)
-                .background(
-                    self.shape
-                        .fill(self.theme.palette.cardBackground)
-                        .overlay(
-                            self.shape.stroke(
-                                self.theme.palette.cardBorder.opacity(self.isHovered ? 0.45 : 0.25),
-                                lineWidth: 1
-                            )
-                        )
-                )
-                .shadow(
-                    color: self.theme.palette.cardBorder.opacity(self.isHovered ? 0.35 : 0.15),
-                    radius: self.isHovered ? self.theme.metrics.cardShadow.radius : max(self.theme.metrics.cardShadow.radius - 4, 1),
-                    x: 0,
-                    y: self.isHovered ? self.theme.metrics.cardShadow.y : self.theme.metrics.cardShadow.y - 2
-                )
-                .scaleEffect(self.configuration.isPressed ? 0.98 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
-                .onHover { self.isHovered = $0 }
-        }
+        SayItButtonStyle(role: .secondary, size: .large, fullWidth: true).makeBody(configuration: configuration)
     }
 }
-
-// MARK: - Compact Button
 
 struct CompactButtonStyle: ButtonStyle {
     var isReady: Bool = false
-    var foreground: Color? = nil
-    var borderColor: Color? = nil
+    var foreground: Color?
+    var borderColor: Color?
 
     func makeBody(configuration: Configuration) -> some View {
-        CompactButton(
-            configuration: configuration,
-            isReady: self.isReady,
-            foreground: self.foreground,
-            borderColor: self.borderColor
-        )
-    }
-
-    private struct CompactButton: View {
-        @Environment(\.theme) private var theme
-        @State private var isHovered = false
-        let configuration: ButtonStyle.Configuration
-        let isReady: Bool
-        let foreground: Color?
-        let borderColor: Color?
-
-        private var shape: RoundedRectangle {
-            RoundedRectangle(cornerRadius: self.theme.metrics.corners.sm, style: .continuous)
-        }
-
-        var body: some View {
-            let border = self.borderColor ?? (self.isReady ? self.theme.palette.accent : self.theme.palette.cardBorder)
-            let foregroundColor = self.foreground ?? self.theme.palette.primaryText
-
-            self.configuration.label
-                .fontWeight(.medium)
-                .padding(.horizontal, self.theme.metrics.spacing.md)
-                .frame(height: 34)
-                .foregroundStyle(foregroundColor)
-                .background(self.theme.materials.card, in: self.shape)
-                .background(
-                    self.shape
-                        .fill(self.theme.palette.cardBackground)
-                        .overlay(
-                            self.shape.stroke(
-                                border.opacity(self.isHovered ? 0.45 : 0.25),
-                                lineWidth: 1
-                            )
-                        )
-                )
-                .shadow(
-                    color: border.opacity(self.isHovered ? 0.3 : 0.12),
-                    radius: self.isHovered ? self.theme.metrics.cardShadow.radius - 2 : 2,
-                    x: 0,
-                    y: self.isHovered ? self.theme.metrics.cardShadow.y - 1 : 1
-                )
-                .scaleEffect(self.configuration.isPressed ? 0.97 : (self.isHovered ? 1.01 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
-                .onHover { self.isHovered = $0 }
-        }
+        SayItButtonStyle(role: self.isReady ? .primary : .secondary, size: .regular).makeBody(configuration: configuration)
     }
 }
-
-// MARK: - Accent Filled Button (Solid accent background)
 
 struct AccentButtonStyle: ButtonStyle {
     var compact: Bool = false
 
     func makeBody(configuration: Configuration) -> some View {
-        AccentButton(configuration: configuration, compact: self.compact)
-    }
-
-    private struct AccentButton: View {
-        @Environment(\.theme) private var theme
-        @State private var isHovered = false
-        let configuration: ButtonStyle.Configuration
-        let compact: Bool
-
-        private var shape: RoundedRectangle {
-            RoundedRectangle(cornerRadius: self.compact ? 8 : self.theme.metrics.corners.md, style: .continuous)
-        }
-
-        var body: some View {
-            self.configuration.label
-                .fontWeight(.semibold)
-                .padding(.horizontal, self.compact ? 12 : self.theme.metrics.spacing.lg)
-                .padding(.vertical, self.compact ? 8 : self.theme.metrics.spacing.md)
-                .frame(minHeight: self.compact ? 32 : 36)
-                .foregroundStyle(Color.white)
-                .background(
-                    self.shape
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    self.theme.palette.accent,
-                                    self.theme.palette.accent.opacity(0.85),
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                )
-                .overlay(
-                    self.shape
-                        .stroke(Color.white.opacity(self.isHovered ? 0.3 : 0.15), lineWidth: 1)
-                )
-                .shadow(
-                    color: self.theme.palette.accent.opacity(self.isHovered ? 0.5 : 0.3),
-                    radius: self.isHovered ? 6 : 4,
-                    x: 0,
-                    y: self.isHovered ? 3 : 2
-                )
-                .scaleEffect(self.configuration.isPressed ? 0.97 : (self.isHovered ? 1.02 : 1.0))
-                .animation(.spring(response: 0.18, dampingFraction: 0.78), value: self.isHovered)
-                .animation(.spring(response: 0.2, dampingFraction: 0.8), value: self.configuration.isPressed)
-                .onHover { self.isHovered = $0 }
-        }
+        SayItButtonStyle(role: .primary, size: .regular).makeBody(configuration: configuration)
     }
 }
 
-// MARK: - Inline Button
-
-struct InlineButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        InlineButton(configuration: configuration)
-    }
-
-    private struct InlineButton: View {
-        @Environment(\.theme) private var theme
-        @State private var isHovered = false
-        let configuration: ButtonStyle.Configuration
-
-        private var shape: Capsule {
-            Capsule()
-        }
-
-        var body: some View {
-            self.configuration.label
-                .font(.caption)
-                .fontWeight(.medium)
-                .padding(.horizontal, self.theme.metrics.spacing.md)
-                .padding(.vertical, self.theme.metrics.spacing.xs)
-                .foregroundStyle(Color.white)
-                .background(
-                    self.shape
-                        .fill(self.theme.palette.accent.opacity(self.isHovered ? 0.9 : 0.8))
-                )
-                .shadow(
-                    color: self.theme.palette.accent.opacity(self.isHovered ? 0.45 : 0.25),
-                    radius: self.isHovered ? 6 : 3,
-                    x: 0,
-                    y: self.isHovered ? 3 : 1
-                )
-                .scaleEffect(self.configuration.isPressed ? 0.96 : (self.isHovered ? 1.03 : 1.0))
-                .animation(.easeOut(duration: 0.15), value: self.isHovered)
-                .animation(.easeOut(duration: 0.15), value: self.configuration.isPressed)
-                .onHover { self.isHovered = $0 }
-        }
-    }
-}
-
-// MARK: - Glass Toggle Style (now uses native switch for consistency)
-
-struct GlassToggleStyle: ToggleStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        ToggleBody(configuration: configuration)
-    }
-
-    private struct ToggleBody: View {
-        @Environment(\.theme) private var theme
-        let configuration: ToggleStyle.Configuration
-
-        var body: some View {
-            HStack {
-                self.configuration.label
-                    .foregroundStyle(self.theme.palette.primaryText)
-
-                Spacer()
-
-                Toggle("", isOn: self.configuration.$isOn)
-                    .toggleStyle(.switch)
-                    .tint(self.theme.palette.accent)
-                    .labelsHidden()
-            }
-        }
-    }
-}
-
-// MARK: - Native Form Row Style
+// MARK: - Form Row
 
 struct FormRowStyle: ViewModifier {
+    @Environment(\.theme) private var theme
+
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThinMaterial.opacity(0.5))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(.white.opacity(0.08), lineWidth: 1)))
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.sm + Space.xxs)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .fill(self.theme.palette.surfaceSunken)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .strokeBorder(self.theme.palette.hairline, lineWidth: 1)
+            )
     }
 }
 

@@ -525,8 +525,7 @@ final class MenuBarManager: ObservableObject {
         let rootView = ContentView()
             .environmentObject(self)
             .environmentObject(AppServices.shared)
-            .appTheme(.dark)
-            .preferredColorScheme(.dark)
+            .sayItTheme()
 
         // Host inside an AppKit window
         let hostingController = NSHostingController(rootView: rootView)

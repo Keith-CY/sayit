@@ -447,5 +447,5 @@ struct TranscriptionHistoryView: View {
 #Preview {
     TranscriptionHistoryView()
         .frame(width: 800, height: 600)
-        .environment(\.theme, AppTheme.dark)
+        .sayItTheme()
 }

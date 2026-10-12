@@ -20,6 +20,21 @@ class NotchContentState: ObservableObject {
     @Published var mode: OverlayMode = .dictation
     @Published var promptPickerMode: SettingsStore.PromptMode = .dictate
     @Published var isProcessing: Bool = false // AI processing state
+    /// Single source of truth for what the overlay is communicating.
+    @Published var phase: OverlayPhase = .idle
+    /// When `phase` last changed; used to keep terminal phases on screen long enough to read.
+    private(set) var phaseChangedAt = Date.distantPast
+
+    func setPhase(_ phase: OverlayPhase) {
+        guard phase != self.phase else { return }
+        self.phase = phase
+        self.phaseChangedAt = Date()
+        if phase.isWorking {
+            self.isProcessing = true
+        } else if phase.isTerminal || phase == .idle || phase == .listening {
+            self.isProcessing = false
+        }
+    }
 
     // Icon of the target app (where text will be typed)
     @Published var targetAppIcon: NSImage?

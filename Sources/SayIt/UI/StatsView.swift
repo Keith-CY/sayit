@@ -518,5 +518,5 @@ private struct StatCard<Content: View>: View {
 #Preview {
     StatsView()
         .frame(width: 600, height: 800)
-        .environment(\.theme, AppTheme.dark)
+        .sayItTheme()
 }

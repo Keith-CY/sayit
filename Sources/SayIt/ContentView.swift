@@ -46,7 +46,6 @@ struct ContentView: View {
     }
 
     @EnvironmentObject private var appServices: AppServices
-    @StateObject private var mouseTracker = MousePositionTracker()
     @StateObject private var commandModeService = CommandModeService()
     @StateObject private var rewriteModeService = RewriteModeService()
     @EnvironmentObject private var menuBarManager: MenuBarManager
@@ -150,9 +149,7 @@ struct ContentView: View {
             .navigationSplitViewStyle(.balanced)
         )
 
-        let tracked = layout.withMouseTracking(self.mouseTracker)
-        let env = tracked.environmentObject(self.mouseTracker)
-        let nav = env.onChange(of: self.menuBarManager.requestedNavigationDestination) { _, destination in
+        let nav = layout.onChange(of: self.menuBarManager.requestedNavigationDestination) { _, destination in
             self.handleMenuBarNavigation(destination)
         }
 
@@ -965,7 +962,6 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(GlassButtonStyle())
-                .buttonHoverEffect()
             } else if self.asr.micStatus == .denied {
                 Button {
                     self.asr.openSystemSettingsForMic()
@@ -977,7 +973,6 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(GlassButtonStyle())
-                .buttonHoverEffect()
             }
         }
     }
