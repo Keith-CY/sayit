@@ -61,7 +61,7 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
 
     func prepare(progressHandler: ((Double) -> Void)?) async throws {
         // 1. Resolve a stable locale that is supported by SpeechAnalyzer.
-        let resolvedLocale = await self.resolveSupportedLocale()
+        let resolvedLocale = await Self.resolveSupportedLocale()
         let supportedLocales = await SpeechTranscriber.supportedLocales
         let currentLocaleID = Self.normalizedLocaleIdentifier(resolvedLocale)
         let isSupported = supportedLocales
@@ -85,24 +85,7 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
         )
 
         // 3. Check if model is installed, download if needed
-        let installedLocales = await SpeechTranscriber.installedLocales
-        let installedSet = Set(installedLocales.map { Self.normalizedLocaleIdentifier($0) })
-        let isInstalled = installedSet.contains(currentLocaleID)
-
-        if !isInstalled {
-            DebugLogger.shared.info("Downloading speech model for locale: \(currentLocaleID)", source: "AppleSpeechAnalyzerProvider")
-            if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                // Report progress periodically during download
-                let progress = downloader.progress
-                Task {
-                    while !progress.isFinished, !progress.isCancelled {
-                        progressHandler?(progress.fractionCompleted)
-                        try? await Task.sleep(for: .milliseconds(100))
-                    }
-                }
-                try await downloader.downloadAndInstall()
-            }
-        }
+        try await Self.installAssetsIfNeeded(for: transcriber, locale: resolvedLocale, progressHandler: progressHandler)
 
         // 4. Get the best available audio format for conversion
         self.analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
@@ -150,7 +133,7 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     func refreshModelsExistOnDiskAsync() async -> Bool {
         let installedLocales = await SpeechTranscriber.installedLocales
         let currentLocaleID = Self.normalizedLocaleIdentifier(
-            await self.resolveSupportedLocale(preferDownload: false)
+            await Self.resolveSupportedLocale(preferDownload: false)
         )
         let installedSet = Set(installedLocales.map { Self.normalizedLocaleIdentifier($0) })
         let isInstalled = installedSet.contains(currentLocaleID)
@@ -373,7 +356,32 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
         return buffer
     }
 
-    private func resolveSupportedLocale(preferDownload: Bool = true) async -> Locale {
+    /// Downloads the on-device speech model for `locale` if it isn't installed yet.
+    static func installAssetsIfNeeded(
+        for transcriber: SpeechTranscriber,
+        locale: Locale,
+        progressHandler: ((Double) -> Void)?
+    ) async throws {
+        let localeID = Self.normalizedLocaleIdentifier(locale)
+        let installedLocales = await SpeechTranscriber.installedLocales
+        guard !installedLocales.map({ Self.normalizedLocaleIdentifier($0) }).contains(localeID) else { return }
+
+        DebugLogger.shared.info("Downloading speech model for locale: \(localeID)", source: "AppleSpeechAnalyzerProvider")
+        if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            // Report progress periodically during download
+            let progress = downloader.progress
+            Task {
+                while !progress.isFinished, !progress.isCancelled {
+                    progressHandler?(progress.fractionCompleted)
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            try await downloader.downloadAndInstall()
+        }
+    }
+
+    /// The first locale SpeechAnalyzer supports from the user's speech language setting.
+    static func resolveSupportedLocale(preferDownload: Bool = true) async -> Locale {
         let mode = SettingsStore.shared.speechLanguageMode
         let candidateLocales: [Locale]
         if mode.isAutomatic {
@@ -487,7 +495,7 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
 // MARK: - Buffer Converter (from Apple's sample)
 
 @available(macOS 26.0, *)
-private class BufferConverter {
+nonisolated final class BufferConverter {
     enum Error: Swift.Error {
         case failedToCreateConverter
         case failedToCreateConversionBuffer

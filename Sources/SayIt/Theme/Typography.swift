@@ -52,4 +52,13 @@ enum AppFont {
         static let keyCap = Font.system(size: 10, weight: .semibold, design: .rounded)
         static let icon = Font.system(size: 12, weight: .medium)
     }
+
+    /// Live Captions panel: other people's speech, read at a glance while watching.
+    enum LiveCaption {
+        /// Caption text, sized to read from a normal viewing distance.
+        static let text = Font.system(size: 19, weight: .regular, design: .serif)
+        /// Empty, preparing and failed states.
+        static let message = Font.system(size: 13, weight: .medium)
+        static let detail = Font.system(size: 12, weight: .regular)
+    }
 }

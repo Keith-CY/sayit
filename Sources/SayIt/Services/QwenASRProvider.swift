@@ -96,13 +96,28 @@ final class QwenASRProvider: TranscriptionProvider {
 /// Keeps the mutable MLX model off the main thread and serializes inference.
 private actor QwenInferenceRuntime {
     private var model: Qwen3ASRModel?
+    /// The load in progress, so callers that overlap (dictation and Live Captions) share
+    /// one copy of the weights instead of each loading 2.5 GB.
+    private var loading: Task<Void, Error>?
 
     func load(from directory: URL) async throws {
         guard self.model == nil else { return }
-        // Bound reusable GPU buffers so switching away can return memory to the system.
-        Memory.cacheLimit = 64 * 1024 * 1024
-        let loaded = try await Qwen3ASRModel.fromModelDirectory(directory)
+        let task: Task<Void, Error>
+        if let loading = self.loading {
+            task = loading
+        } else {
+            // Bound reusable GPU buffers so switching away can return memory to the system.
+            Memory.cacheLimit = 64 * 1024 * 1024
+            task = Task { try await self.loadModel(from: directory) }
+            self.loading = task
+        }
+        defer { if self.loading == task { self.loading = nil } }
+        try await task.value
         try Task.checkCancellation()
+    }
+
+    private func loadModel(from directory: URL) async throws {
+        let loaded = try await Qwen3ASRModel.fromModelDirectory(directory)
         self.model = loaded
     }
 

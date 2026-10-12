@@ -329,6 +329,262 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    // MARK: - Live Captions
+
+    @MainActor
+    func testLiveCaptionTranscript_pauseStartsNewLineAndClosesPrevious() {
+        var transcript = LiveCaptionTranscript()
+        XCTAssertEqual(transcript.applyFinal("请帮我 review", start: 0, end: 1.2), [])
+        XCTAssertEqual(transcript.applyFinal("这个 pull request。", start: 1.4, end: 2.6), [], "A short gap continues the line")
+        XCTAssertEqual(transcript.lines.map(\.text), ["请帮我 review这个 pull request。"])
+
+        let closed = transcript.applyFinal("Then deploy.", start: 3.6, end: 4.5)
+        XCTAssertEqual(closed, [0], "A 1 s pause closes the first line")
+        XCTAssertEqual(transcript.lines.map(\.state), [.awaitingRefinement, .open])
+        XCTAssertEqual(transcript.lines[1].start, 3.6)
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_longSpeechClosesAtMaxLength() {
+        var transcript = LiveCaptionTranscript()
+        var closed: [Int] = []
+        for second in stride(from: 0.0, to: 10, by: 2) {
+            closed += transcript.applyFinal("phrase", start: second, end: second + 1.9)
+        }
+        XCTAssertEqual(closed, [0], "The line closes once it spans 8 s")
+        XCTAssertEqual(transcript.lines.first?.text, "phrase phrase phrase phrase phrase")
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_idleClosesOnlyWhenNoWordsAreForming() {
+        var transcript = LiveCaptionTranscript()
+        _ = transcript.applyFinal("Hello there.", start: 0, end: 1)
+        XCTAssertEqual(transcript.applyVolatile("and", start: 1.1), [])
+        XCTAssertEqual(transcript.closeIfIdle(now: 5), [], "Forming words keep the line open")
+
+        _ = transcript.applyFinal("and welcome.", start: 1.1, end: 2)
+        XCTAssertEqual(transcript.volatileText, "", "A final covering the tail clears it")
+        XCTAssertEqual(transcript.closeIfIdle(now: 2.5), [])
+        XCTAssertEqual(transcript.closeIfIdle(now: 3.3), [0])
+        XCTAssertEqual(transcript.lines.first?.text, "Hello there. and welcome.")
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_wordsAfterAPauseCloseTheLineBeforeTheySettle() {
+        var transcript = LiveCaptionTranscript()
+        _ = transcript.applyFinal("请帮我 review 这个 pull request。", start: 0.4, end: 5.5)
+        XCTAssertEqual(transcript.applyVolatile("Live", start: 5.9), [], "A short gap may continue the line")
+        XCTAssertEqual(transcript.applyVolatile("Live captions", start: 7.9), [0])
+        XCTAssertEqual(transcript.lines.first?.state, .awaitingRefinement)
+
+        _ = transcript.applyFinal("Live captions now refine every line.", start: 7.9, end: 11.8)
+        XCTAssertEqual(transcript.lines.map(\.state), [.awaitingRefinement, .open])
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_heardPauseClosesTheLineOnceAppleCommitsIt() {
+        var transcript = LiveCaptionTranscript()
+        _ = transcript.applyFinal("Hello", start: 0, end: 1)
+        _ = transcript.applyVolatile("there", start: 1.0)
+        XCTAssertEqual(transcript.speechEnded(at: 1.6), [], "Apple hasn't committed the last words yet")
+
+        XCTAssertEqual(transcript.applyFinal("there.", start: 1.05, end: 1.5), [0], "Committed words before the pause close the line")
+        XCTAssertEqual(transcript.lines.first?.text, "Hello there.")
+
+        XCTAssertEqual(transcript.applyFinal("Next", start: 3, end: 3.5), [], "Speech after the pause starts an open line")
+        XCTAssertEqual(transcript.lines.last?.state, .open)
+        XCTAssertEqual(transcript.speechEnded(at: 3.9), [1], "With nothing pending, a pause closes the line at once")
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_lineAudioDoesNotOverlapNeighbours() throws {
+        var transcript = LiveCaptionTranscript()
+        _ = transcript.applyFinal("不过有两个用户反馈，", start: 15.2, end: 19.0)
+        XCTAssertEqual(transcript.applyFinal("长时间不用之后，第一次转", start: 19.1, end: 23.3), [0], "Closed at max length")
+        _ = transcript.applyFinal("写会比较慢。", start: 23.4, end: 25.0)
+        XCTAssertEqual(transcript.lines.count, 2)
+
+        let first = try XCTUnwrap(transcript.audioRange(for: 0, padding: 0.25))
+        XCTAssertEqual(first.lowerBound, 14.95, accuracy: 0.001)
+        XCTAssertEqual(first.upperBound, 23.4, accuracy: 0.001, "Stops where the next line starts")
+        let second = try XCTUnwrap(transcript.audioRange(for: 1, padding: 0.25))
+        XCTAssertEqual(second.lowerBound, 23.3, accuracy: 0.001, "Starts where the previous line ends")
+        XCTAssertEqual(second.upperBound, 25.25, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_refinementReplacesOrKeepsAppleText() {
+        var transcript = LiveCaptionTranscript()
+        _ = transcript.applyFinal("请帮我 review 这个 pull request", start: 0, end: 2)
+        _ = transcript.applyFinal("然后 deploy 到 staging", start: 4, end: 6)
+        _ = transcript.closeIfIdle(now: 10)
+
+        transcript.refine(0, with: "请帮我 review 这个 pull request。")
+        transcript.refine(1, with: nil)
+        XCTAssertEqual(transcript.lines.map(\.state), [.refined, .draftOnly])
+        XCTAssertEqual(transcript.lines[0].text, "请帮我 review 这个 pull request。")
+        XCTAssertEqual(transcript.lines[1].text, "然后 deploy 到 staging")
+
+        transcript.refine(0, with: "ignored")
+        XCTAssertEqual(transcript.lines[0].text, "请帮我 review 这个 pull request。", "Only lines awaiting refinement change")
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_keepsAudioForDraftLinesAndTrimsFinishedOnes() {
+        var transcript = LiveCaptionTranscript(policy: .init(maxLines: 2))
+        _ = transcript.applyFinal("one", start: 0, end: 1)
+        _ = transcript.applyFinal("two", start: 3, end: 4)
+        _ = transcript.applyFinal("three", start: 6, end: 7)
+        XCTAssertEqual(transcript.lines.count, 3, "Unrefined lines are never dropped")
+        XCTAssertEqual(transcript.earliestNeededTime(now: 8), 0)
+
+        transcript.refine(0, with: "One.")
+        XCTAssertEqual(transcript.lines.map(\.text), ["two", "three"])
+        XCTAssertEqual(transcript.earliestNeededTime(now: 8), 3)
+    }
+
+    @MainActor
+    func testLiveCaptionTranscript_joinsLatinWordsWithSpacesOnly() {
+        XCTAssertEqual(LiveCaptionTranscript.join("Hello", "world"), "Hello world")
+        XCTAssertEqual(LiveCaptionTranscript.join("Hello", "."), "Hello.")
+        XCTAssertEqual(LiveCaptionTranscript.join("Done.", "Next"), "Done. Next")
+        XCTAssertEqual(LiveCaptionTranscript.join("你好", "世界"), "你好世界")
+        XCTAssertEqual(LiveCaptionTranscript.join("review", "这个"), "review这个")
+        XCTAssertEqual(LiveCaptionTranscript.join("version", "2"), "version 2")
+    }
+
+    /// Plays speech through the Mac's speakers and checks it comes back as captions:
+    /// system audio tap → Apple draft → lines → Qwen refinement.
+    @MainActor
+    func testLiveCaptionsEndToEnd_captionsSpeechPlayedByTheMac() async throws {
+        guard ProcessInfo.processInfo.environment["RUN_LIVE_CAPTION_E2E_TESTS"] == "1" else {
+            throw XCTSkip("Set RUN_LIVE_CAPTION_E2E_TESTS=1 to play speech aloud and caption it.")
+        }
+        guard LiveCaptionService.isSupported else { throw XCTSkip("Live Captions need macOS 26.") }
+
+        let service = LiveCaptionService.shared
+        service.start()
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
+        XCTAssertEqual(service.viewState.phase, .listening)
+
+        let started = Date()
+        for (voice, text) in [
+            ("Tingting", "请帮我 review 这个 pull request，然后 deploy 到 staging。"),
+            ("Samantha", "Live captions now refine every line on this Mac."),
+        ] {
+            try await Self.say(text, voice: voice)
+            try await Task.sleep(for: .seconds(1.5))
+        }
+        try await Self.waitUntil(timeout: 30) {
+            let lines = service.viewState.lines
+            return lines.count >= 2 && !lines.contains(where: \.isDraft)
+        }
+
+        let lines = service.viewState.lines
+        for line in lines {
+            print("LIVE_CAPTION_E2E_LINE state=\(line.state) audio=\(line.start)-\(line.end) text=\(line.text)")
+        }
+        print("LIVE_CAPTION_E2E_SECONDS=\(Date().timeIntervalSince(started))")
+        let joined = lines.map(\.text).joined(separator: " ")
+        let text = Self.normalize(joined)
+        XCTAssertGreaterThanOrEqual(lines.count, 2, "The pause between the two sentences should split them")
+        XCTAssertTrue(lines.contains { $0.state == .refined }, "At least one line should come from Qwen")
+        XCTAssertTrue(
+            joined.unicodeScalars.contains { (0x4E00 ... 0x9FFF).contains(Int($0.value)) },
+            "Chinese speech must stay Chinese, not be translated: \(joined)"
+        )
+        for term in ["review", "deploy", "staging", "captions"] {
+            XCTAssertTrue(text.contains(term), "Missing '\(term)' in: \(text)")
+        }
+    }
+
+    /// About a minute of alternating Chinese and English speech, for measuring what Live
+    /// Captions cost while running (sample the process from outside while it plays).
+    @MainActor
+    func testLiveCaptionsSoak_aMinuteOfSpeech() async throws {
+        guard ProcessInfo.processInfo.environment["RUN_LIVE_CAPTION_SOAK_TESTS"] == "1" else {
+            throw XCTSkip("Set RUN_LIVE_CAPTION_SOAK_TESTS=1 to play a minute of speech aloud and caption it.")
+        }
+        guard LiveCaptionService.isSupported else { throw XCTSkip("Live Captions need macOS 26.") }
+
+        let service = LiveCaptionService.shared
+        service.start()
+        defer { service.stop() }
+        try await Self.waitUntil(timeout: 60) { service.viewState.phase != .preparing }
+
+        let script: [(String, String)] = [
+            ("Tingting", "今天我们先过一下上周的发布情况，整体比较顺利。"),
+            ("Samantha", "The new onboarding flow shipped on Tuesday without any rollbacks."),
+            ("Tingting", "不过有两个用户反馈，说长时间不用之后，第一次转写会比较慢。"),
+            ("Samantha", "We traced it to the model weights being paged out while the app sat idle."),
+            ("Tingting", "所以现在开始录音的时候，会先在后台把模型预热一下。"),
+            ("Samantha", "That hides the page-in behind the time you spend speaking."),
+            ("Tingting", "接下来我们想做 Live Captions，用 Apple 出草稿，再用 Qwen 逐句替换。"),
+            ("Samantha", "Captions should appear within a second, and settle about two seconds later."),
+            ("Tingting", "如果大家没有别的问题，我们就按这个计划推进，下周再同步一次进度。"),
+            ("Samantha", "Thanks everyone, see you next week."),
+        ]
+        let started = Date()
+        for (voice, text) in script {
+            try await Self.say(text, voice: voice)
+            try await Task.sleep(for: .seconds(1))
+        }
+        let spoken = Date().timeIntervalSince(started)
+        try await Self.waitUntil(timeout: 30) { !service.viewState.lines.contains(where: \.isDraft) }
+
+        let lines = service.viewState.lines
+        for line in lines {
+            print("LIVE_CAPTION_SOAK_LINE state=\(line.state) audio=\(line.start)-\(line.end) text=\(line.text)")
+        }
+        print("LIVE_CAPTION_SOAK_SPOKEN_SECONDS=\(spoken) LINES=\(lines.count) REFINED=\(lines.filter { $0.state == .refined }.count)")
+        XCTAssertGreaterThanOrEqual(lines.filter { $0.state == .refined }.count, script.count / 2)
+    }
+
+    private static func say(_ text: String, voice: String) async throws {
+        try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+            process.arguments = ["-v", voice, text]
+            try process.run()
+            process.waitUntilExit()
+        }.value
+    }
+
+    @MainActor
+    private static func waitUntil(timeout: TimeInterval, _ condition: @MainActor () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("Timed out after \(timeout) s") }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    func testCaptionAudioTimeline_slicesByTimeAndRefusesDiscardedAudio() throws {
+        guard #available(macOS 14.2, *) else { throw XCTSkip("Needs macOS 14.2") }
+        let timeline = CaptionAudioTimeline()
+        timeline.append([Float](repeating: 0, count: 16000 * 8))
+        XCTAssertFalse(timeline.hasHeardSound)
+        timeline.append([Float](repeating: 0.2, count: 16000 * 2))
+        XCTAssertTrue(timeline.hasHeardSound)
+        XCTAssertEqual(timeline.duration, 10, accuracy: 0.001)
+
+        XCTAssertEqual(timeline.samples(from: 8, to: 9).count, 16000)
+        XCTAssertEqual(timeline.samples(from: 9.5, to: 12).count, 8000, "Clamped to what was captured")
+
+        timeline.discard(before: 2)
+        XCTAssertFalse(timeline.samples(from: 0, to: 1).isEmpty, "Trims happen in 5 s steps")
+        timeline.discard(before: 6)
+        XCTAssertTrue(timeline.samples(from: 5, to: 7).isEmpty, "Discarded audio can't be refined")
+        XCTAssertEqual(timeline.samples(from: 6, to: 7).count, 16000)
+
+        XCTAssertEqual(timeline.trailingSilence(), 0, "The audio ends loud")
+        timeline.append([Float](repeating: 0, count: 16000))
+        XCTAssertEqual(timeline.trailingSilence(), 1, accuracy: 0.001)
+        let quiet = try XCTUnwrap(timeline.quietestPoint(from: 9, to: 10.5))
+        XCTAssertGreaterThanOrEqual(quiet, 10, "The quiet point is in the silence, not the speech")
+    }
+
     func testStartupPolicyLoadsCachedModelOnlyWhenNeeded() {
         XCTAssertTrue(ASRStartupPolicy.shouldLoadCachedModel(isReady: false, modelsExistOnDisk: true))
         XCTAssertFalse(ASRStartupPolicy.shouldLoadCachedModel(isReady: true, modelsExistOnDisk: true))

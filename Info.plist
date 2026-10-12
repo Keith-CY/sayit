@@ -22,6 +22,8 @@
 	<string>public.app-category.productivity</string>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>SayIt needs Accessibility permission to listen for global hotkeys and type text into other apps when you stop recording.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>SayIt shows Live Captions for the audio your Mac plays. The audio is transcribed on this Mac and never sent to external servers.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SayIt needs microphone access to record your voice for speech-to-text transcription. Your audio is processed locally and never sent to external servers.</string>
 	<key>LSUIElement</key>

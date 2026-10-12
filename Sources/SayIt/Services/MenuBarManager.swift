@@ -16,6 +16,7 @@ final class MenuBarManager: ObservableObject {
     // Cached menu items to avoid rebuilding entire menu
     private var statusMenuItem: NSMenuItem?
     private var aiMenuItem: NSMenuItem?
+    private var liveCaptionsMenuItem: NSMenuItem?
 
     // References to app state
     private weak var asrService: ASRService?
@@ -53,6 +54,13 @@ final class MenuBarManager: ObservableObject {
         self.aiProcessingEnabled = SettingsStore.shared.enableAIProcessing
         // Reflect changes to menu when toggled from elsewhere (e.g., General tab)
         self.$aiProcessingEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateMenu()
+            }
+            .store(in: &self.cancellables)
+        // Live Captions can also be turned off from the panel's close button.
+        LiveCaptionService.shared.$isOn
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.updateMenu()
@@ -358,6 +366,14 @@ final class MenuBarManager: ObservableObject {
             menu.addItem(aiItem)
         }
 
+        // Live Captions toggle (needs macOS 26 SpeechAnalyzer)
+        if LiveCaptionService.isSupported {
+            let captionsItem = NSMenuItem(title: "Live Captions", action: #selector(self.toggleLiveCaptions), keyEquivalent: "")
+            captionsItem.target = self
+            self.liveCaptionsMenuItem = captionsItem
+            menu.addItem(captionsItem)
+        }
+
         menu.addItem(.separator())
 
         // Open Main Window
@@ -413,6 +429,7 @@ final class MenuBarManager: ObservableObject {
         // AI Enhancement is a checkmark item
         self.aiMenuItem?.title = "AI Enhancement"
         self.aiMenuItem?.state = self.aiProcessingEnabled ? .on : .off
+        self.liveCaptionsMenuItem?.state = LiveCaptionService.shared.isOn ? .on : .off
 
         self.updateStatusItemAccessibility()
     }
@@ -440,6 +457,10 @@ final class MenuBarManager: ObservableObject {
 
     @objc private func toggleAIProcessing() {
         _ = self.toggleAIProcessingEnabled()
+    }
+
+    @objc private func toggleLiveCaptions() {
+        LiveCaptionService.shared.toggle()
     }
 
     @objc private func openMainWindow() {
